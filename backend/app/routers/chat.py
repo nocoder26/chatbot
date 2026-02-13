@@ -81,7 +81,7 @@ async def chat_endpoint(request: ChatRequest):
         # Step A: Convert user message to a vector
         emb_resp = openai_client.embeddings.create(
             input=user_message,
-            model="text-embedding-3-small"
+            model="text-embedding-ada-002"
         )
         vector = emb_resp.data[0].embedding
 
