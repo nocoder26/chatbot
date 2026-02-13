@@ -1,7 +1,6 @@
 import os
 import sys
 import traceback
-import logging
 from typing import List
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -15,16 +14,11 @@ from app.database import get_db
 from app.models import ChatLog
 from app.services.translator import RunPodTranslator
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 # Configuration
 GAP_THRESHOLD = 0.75
 TOP_K_RESULTS = 3
-INDEX_NAME = os.environ.get("PINECONE_INDEX_NAME", "reproductive-health")
 
 SYSTEM_PROMPT = """You are an empathetic and knowledgeable Reproductive Health Assistant.
 
@@ -37,6 +31,21 @@ Guidelines:
 - Be compassionate and non-judgmental in your responses.
 - If the context doesn't contain relevant information, acknowledge limitations honestly.
 - Keep responses clear, concise, and easy to understand."""
+
+# Global Pinecone initialization
+print("--- INITIALIZING PINECONE GLOBALLY ---")
+sys.stdout.flush()
+try:
+    pc = Pinecone(api_key=os.environ.get("PINECONE_API_KEY"))
+    index = pc.Index(os.environ.get("PINECONE_INDEX_NAME", "reproductive-health"))
+    print("Pinecone initialized successfully")
+    sys.stdout.flush()
+except Exception as e:
+    print(f"CRITICAL INIT ERROR: {e}")
+    print(traceback.format_exc())
+    sys.stdout.flush()
+    pc = None
+    index = None
 
 
 class ChatRequest(BaseModel):
@@ -53,12 +62,6 @@ class ChatResponse(BaseModel):
 
 def get_translator():
     return RunPodTranslator()
-
-
-def get_pinecone_index():
-    """Initialize Pinecone with new v3 syntax."""
-    pc = Pinecone(api_key=os.environ.get("PINECONE_API_KEY"))
-    return pc.Index(os.environ.get("PINECONE_INDEX_NAME", "reproductive-health"))
 
 
 def get_embeddings():
@@ -78,8 +81,11 @@ def get_groq_llm():
     )
 
 
-def search_pinecone(query: str, index, embeddings, top_k: int = TOP_K_RESULTS):
+def search_pinecone(query: str, embeddings, top_k: int = TOP_K_RESULTS):
     """Search Pinecone for relevant context."""
+    global index
+    if index is None:
+        raise Exception("Pinecone index not initialized")
     query_vector = embeddings.embed_query(query)
     results = index.query(
         vector=query_vector,
@@ -118,14 +124,14 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
         print(f"Language: {request.language}")
         sys.stdout.flush()
 
+        # Check if Pinecone is initialized
+        if index is None:
+            raise Exception("Pinecone not initialized - check PINECONE_API_KEY and PINECONE_INDEX_NAME")
+
         # Initialize services
         print("Initializing translator...")
         sys.stdout.flush()
         translator = get_translator()
-
-        print("Initializing Pinecone...")
-        sys.stdout.flush()
-        index = get_pinecone_index()
 
         print("Initializing OpenAI embeddings...")
         sys.stdout.flush()
@@ -148,7 +154,7 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
         # Step 2: Search Pinecone
         print("Step 2: Searching Pinecone...")
         sys.stdout.flush()
-        matches = search_pinecone(english_query, index, embeddings)
+        matches = search_pinecone(english_query, embeddings)
         print(f"Found {len(matches)} matches")
         sys.stdout.flush()
 
@@ -215,12 +221,8 @@ Please provide a helpful, empathetic response based on the context above."""
         )
 
     except Exception as e:
-        print("--- CRITICAL ERROR ---")
+        print("--- CRITICAL REQUEST ERROR ---")
         print(traceback.format_exc())
-        print("----------------------")
+        print("------------------------------")
         sys.stdout.flush()
-        sys.stderr.write("--- CRITICAL ERROR ---\n")
-        sys.stderr.write(traceback.format_exc())
-        sys.stderr.write("----------------------\n")
-        sys.stderr.flush()
         raise HTTPException(status_code=500, detail=f"Internal Error: {str(e)}")
