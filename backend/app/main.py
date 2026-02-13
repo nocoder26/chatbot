@@ -4,6 +4,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.routers import chat
 from pinecone import Pinecone
+from dotenv import load_dotenv
+
+load_dotenv()
 
 app = FastAPI()
 
@@ -29,7 +32,7 @@ app.include_router(chat.router)
 def root():
     return {"status": "Active", "message": "Fertility Bot Online"}
 
-# --- DIAGNOSTICS ENDPOINT (The Fix) ---
+# --- DIAGNOSTICS ENDPOINT ---
 @app.get("/diagnose")
 def diagnose_system():
     results = {"status": "checking"}
@@ -46,10 +49,14 @@ def diagnose_system():
     try:
         pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
         index_name = os.getenv("PINECONE_INDEX_NAME")
-        index = pc.Index(index_name)
-        stats = index.describe_index_stats()
-        results["pinecone_connection"] = "SUCCESS"
-        results["index_stats"] = str(stats)
+        if index_name:
+            index = pc.Index(index_name)
+            stats = index.describe_index_stats()
+            results["pinecone_connection"] = "SUCCESS"
+            results["index_stats"] = str(stats)
+        else:
+            results["pinecone_connection"] = "FAILED: No Index Name"
+            
     except Exception as e:
         results["pinecone_connection"] = "FAILED"
         results["error"] = str(e)
