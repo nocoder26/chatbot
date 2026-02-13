@@ -1,7 +1,7 @@
 import os
-import re
+import sys
 import traceback
-from typing import List, Optional
+from typing import List
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -13,6 +13,12 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from app.database import get_db
 from app.models import ChatLog
 from app.services.translator import RunPodTranslator
+
+
+def log(message: str):
+    """Print and flush immediately to ensure Railway logs capture it."""
+    print(message)
+    sys.stdout.flush()
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -120,34 +126,35 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
     5. Log interaction to database
     """
     try:
-        print(f"CHAT REQUEST: message='{request.message}', language='{request.language}'")
+        log(f"CHAT REQUEST: message='{request.message}', language='{request.language}'")
 
         # Initialize services
-        print("Initializing translator...")
+        log("Initializing translator...")
         translator = get_translator()
 
-        print(f"Initializing Pinecone with API key: {os.getenv('PINECONE_API_KEY')[:10] if os.getenv('PINECONE_API_KEY') else 'MISSING'}...")
+        log(f"Initializing Pinecone with API key: {os.getenv('PINECONE_API_KEY')[:10] if os.getenv('PINECONE_API_KEY') else 'MISSING'}...")
         index = get_pinecone_index()
 
-        print(f"Initializing OpenAI embeddings with API key: {os.getenv('OPENAI_API_KEY')[:10] if os.getenv('OPENAI_API_KEY') else 'MISSING'}...")
+        log(f"Initializing OpenAI embeddings with API key: {os.getenv('OPENAI_API_KEY')[:10] if os.getenv('OPENAI_API_KEY') else 'MISSING'}...")
         embeddings = get_embeddings()
 
-        print(f"Initializing Groq LLM with API key: {os.getenv('GROQ_API_KEY')[:10] if os.getenv('GROQ_API_KEY') else 'MISSING'}...")
+        log(f"Initializing Groq LLM with API key: {os.getenv('GROQ_API_KEY')[:10] if os.getenv('GROQ_API_KEY') else 'MISSING'}...")
         llm = get_groq_llm()
+
         # Step 1: Translate to English if not already
-        print("Step 1: Processing language...")
+        log("Step 1: Processing language...")
         if request.language.lower() != "en":
             english_query = await translator.translate(request.message, "English")
             if english_query.startswith("[Translation Error]:"):
                 english_query = request.message  # Fallback to original
         else:
             english_query = request.message
-        print(f"English query: {english_query}")
+        log(f"English query: {english_query}")
 
         # Step 2: Search Pinecone
-        print("Step 2: Searching Pinecone...")
+        log("Step 2: Searching Pinecone...")
         matches = await search_pinecone(english_query, index, embeddings)
-        print(f"Found {len(matches)} matches")
+        log(f"Found {len(matches)} matches")
 
         # Check for gap condition
         top_score = matches[0].score if matches else 0.0
@@ -158,7 +165,7 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
         context = build_context(matches)
 
         # Step 3: Generate response with Groq
-        print("Step 3: Generating response with Groq...")
+        log("Step 3: Generating response with Groq...")
         user_prompt = f"""Context from knowledge base:
 {context}
 
@@ -173,10 +180,10 @@ Please provide a helpful, empathetic response based on the context above."""
 
         ai_response = llm.invoke(messages)
         english_response = ai_response.content
-        print(f"Groq response received: {len(english_response)} chars")
+        log(f"Groq response received: {len(english_response)} chars")
 
         # Step 4: Translate response back to user's language
-        print("Step 4: Translating response...")
+        log("Step 4: Translating response...")
         if request.language.lower() != "en":
             final_response = await translator.translate(english_response, request.language)
             if final_response.startswith("[Translation Error]:"):
@@ -185,7 +192,7 @@ Please provide a helpful, empathetic response based on the context above."""
             final_response = english_response
 
         # Step 5: Log to database
-        print("Step 5: Logging to database...")
+        log("Step 5: Logging to database...")
         chat_log = ChatLog(
             query=request.message,
             response=final_response,
@@ -196,9 +203,9 @@ Please provide a helpful, empathetic response based on the context above."""
         db.add(chat_log)
         db.commit()
         db.refresh(chat_log)
-        print(f"Chat logged with ID: {chat_log.id}")
+        log(f"Chat logged with ID: {chat_log.id}")
 
-        print("SUCCESS: Returning response")
+        log("SUCCESS: Returning response")
         return ChatResponse(
             response=final_response,
             citations=citations,
@@ -207,15 +214,16 @@ Please provide a helpful, empathetic response based on the context above."""
         )
 
     except Exception as e:
-        # Log the full error to terminal for debugging
+        # Log the full error to terminal for debugging - use log() to flush immediately
+        import traceback
         error_traceback = traceback.format_exc()
-        print("=" * 50)
-        print("CHAT ENDPOINT ERROR:")
-        print(f"Error Type: {type(e).__name__}")
-        print(f"Error Message: {str(e)}")
-        print("Full Traceback:")
-        print(error_traceback)
-        print("=" * 50)
+        log("=" * 50)
+        log("CHAT ENDPOINT ERROR:")
+        log(f"Error Type: {type(e).__name__}")
+        log(f"Error Message: {str(e)}")
+        log("Full Traceback:")
+        log(error_traceback)
+        log("=" * 50)
         # Return clear JSON error message to frontend
         raise HTTPException(
             status_code=500,
