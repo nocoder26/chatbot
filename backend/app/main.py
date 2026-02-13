@@ -20,11 +20,9 @@ app = FastAPI(
 
 # Configure CORS
 origins = [
+    "https://chatbot-chi-amber.vercel.app",
     "https://chatbot-three-rust.vercel.app",
-    "https://chatbot-three-rust-*.vercel.app",
-    "https://*.vercel.app",
     "http://localhost:3000",
-    "http://127.0.0.1:3000",
 ]
 
 app.add_middleware(

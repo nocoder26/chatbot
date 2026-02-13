@@ -1,5 +1,6 @@
 import os
 import re
+import traceback
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -184,4 +185,12 @@ Please provide a helpful, empathetic response based on the context above."""
         )
 
     except Exception as e:
+        # Log the full error to terminal for debugging
+        print("=" * 50)
+        print("CHAT ENDPOINT ERROR:")
+        print(f"Error Type: {type(e).__name__}")
+        print(f"Error Message: {str(e)}")
+        print("Full Traceback:")
+        traceback.print_exc()
+        print("=" * 50)
         raise HTTPException(status_code=500, detail=f"Chat processing error: {str(e)}")
