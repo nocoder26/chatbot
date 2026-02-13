@@ -32,7 +32,6 @@ app.include_router(chat.router)
 def root():
     return {"status": "Active", "message": "Fertility Bot Online"}
 
-# --- DIAGNOSTICS ENDPOINT ---
 @app.get("/diagnose")
 def diagnose_system():
     results = {"status": "checking"}
