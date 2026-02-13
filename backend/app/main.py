@@ -1,5 +1,7 @@
-from fastapi import FastAPI
+import traceback
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 
 from app.database import engine, Base
@@ -32,6 +34,30 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# Global exception handler - returns EXACT error to frontend
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    error_detail = {
+        "error": str(exc),
+        "error_type": type(exc).__name__,
+        "path": str(request.url.path),
+        "traceback": traceback.format_exc()
+    }
+    print("=" * 50)
+    print("GLOBAL ERROR HANDLER:")
+    print(f"Path: {request.url.path}")
+    print(f"Error Type: {type(exc).__name__}")
+    print(f"Error: {str(exc)}")
+    print("Traceback:")
+    traceback.print_exc()
+    print("=" * 50)
+    return JSONResponse(
+        status_code=500,
+        content=error_detail
+    )
+
 
 # Include routers
 app.include_router(chat.router)

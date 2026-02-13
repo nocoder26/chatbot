@@ -57,6 +57,7 @@ def get_pinecone_index():
 
 
 def get_embeddings():
+    # text-embedding-ada-002 outputs 1536 dimensions (matches Pinecone index)
     return OpenAIEmbeddings(
         api_key=os.getenv("OPENAI_API_KEY"),
         model="text-embedding-ada-002",
@@ -212,4 +213,5 @@ Please provide a helpful, empathetic response based on the context above."""
         print("Full Traceback:")
         traceback.print_exc()
         print("=" * 50)
-        raise HTTPException(status_code=500, detail=f"Chat processing error: {str(e)}")
+        # Re-raise to let global handler return full error to frontend
+        raise
