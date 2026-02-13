@@ -1,228 +1,92 @@
 import os
-import sys
 import traceback
-from typing import List
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
 from pinecone import Pinecone
-from langchain_openai import OpenAIEmbeddings
-from langchain_groq import ChatGroq
-from langchain_core.messages import SystemMessage, HumanMessage
+from openai import OpenAI
 
-from app.database import get_db
-from app.models import ChatLog
-from app.services.translator import RunPodTranslator
+router = APIRouter()
 
-router = APIRouter(prefix="/chat", tags=["chat"])
-
-# Configuration
-GAP_THRESHOLD = 0.75
-TOP_K_RESULTS = 3
-
-SYSTEM_PROMPT = """You are an empathetic and knowledgeable Reproductive Health Assistant.
-
-Guidelines:
-- Provide supportive, accurate information about reproductive health topics.
-- NEVER provide medical diagnoses or specific treatment recommendations.
-- Always encourage users to consult healthcare professionals for personal medical advice.
-- Use the provided context to answer questions accurately.
-- When citing facts from the context, append [Source: Filename] at the end of relevant statements.
-- Be compassionate and non-judgmental in your responses.
-- If the context doesn't contain relevant information, acknowledge limitations honestly.
-- Keep responses clear, concise, and easy to understand."""
-
-# Global Pinecone initialization
-print("--- INITIALIZING PINECONE GLOBALLY ---")
-sys.stdout.flush()
+# --- DIAGNOSTIC STARTUP ---
+# This prints to Railway logs immediately so we know if keys are wrong
+print("--- SYSTEM STARTUP CHECK ---")
 try:
-    pc = Pinecone(api_key=os.environ.get("PINECONE_API_KEY"))
-    index = pc.Index(os.environ.get("PINECONE_INDEX_NAME", "reproductive-health"))
-    print("Pinecone initialized successfully")
-    sys.stdout.flush()
-except Exception as e:
-    print(f"CRITICAL INIT ERROR: {e}")
-    print(traceback.format_exc())
-    sys.stdout.flush()
-    pc = None
-    index = None
+    # 1. Setup Pinecone
+    api_key = os.getenv("PINECONE_API_KEY")
+    env = os.getenv("PINECONE_ENVIRONMENT")
+    index_name = os.getenv("PINECONE_INDEX_NAME")
+    
+    print(f"Pinecone Config: Env={env}, Index={index_name}, KeyLength={len(api_key) if api_key else 0}")
+    
+    pc = Pinecone(api_key=api_key)
+    index = pc.Index(index_name)
+    
+    # 2. Setup OpenAI
+    openai_key = os.getenv("OPENAI_API_KEY")
+    print(f"OpenAI Config: KeyLength={len(openai_key) if openai_key else 0}")
+    client = OpenAI(api_key=openai_key)
+    
+    print("✅ STARTUP SUCCESS: AI Tools Loaded")
 
+except Exception as e:
+    print(f"❌ STARTUP FAILED: {str(e)}")
+    print(traceback.format_exc())
+    # We don't crash here so the server stays alive to report the error
+    pc, index, client = None, None, None
 
 class ChatRequest(BaseModel):
     message: str
-    language: str = "en"
 
+@router.post("/chat")
+async def chat_endpoint(request: ChatRequest):
+    print(f"📩 RECEIVED MESSAGE: {request.message}")
 
-class ChatResponse(BaseModel):
-    response: str
-    citations: List[str]
-    chat_id: int
-    is_gap: bool
+    # 1. Fail fast if startup failed
+    if not client or not index:
+        print("⛔ BLOCKING REQUEST: System not initialized")
+        raise HTTPException(status_code=500, detail="Server failed to start AI tools. Check Railway logs.")
 
-
-def get_translator():
-    return RunPodTranslator()
-
-
-def get_embeddings():
-    """OpenAI embeddings - text-embedding-ada-002 outputs 1536 dimensions."""
-    return OpenAIEmbeddings(
-        api_key=os.environ.get("OPENAI_API_KEY"),
-        model="text-embedding-ada-002",
-    )
-
-
-def get_groq_llm():
-    """Groq LLM - using llama-3.1-8b-instant for fast responses."""
-    return ChatGroq(
-        api_key=os.environ.get("GROQ_API_KEY"),
-        model_name="llama-3.1-8b-instant",
-        temperature=0.7,
-    )
-
-
-def search_pinecone(query: str, embeddings, top_k: int = TOP_K_RESULTS):
-    """Search Pinecone for relevant context."""
-    global index
-    if index is None:
-        raise Exception("Pinecone index not initialized")
-    query_vector = embeddings.embed_query(query)
-    results = index.query(
-        vector=query_vector,
-        top_k=top_k,
-        include_metadata=True,
-    )
-    return results.matches
-
-
-def extract_citations(matches) -> List[str]:
-    """Extract unique source filenames from matches."""
-    sources = set()
-    for match in matches:
-        if match.metadata and "source" in match.metadata:
-            sources.add(match.metadata["source"])
-    return list(sources)
-
-
-def build_context(matches) -> str:
-    """Build context string from Pinecone matches."""
-    context_parts = []
-    for match in matches:
-        if match.metadata and "text" in match.metadata:
-            source = match.metadata.get("source", "Unknown")
-            text = match.metadata["text"]
-            context_parts.append(f"[Source: {source}]\n{text}")
-    return "\n\n".join(context_parts)
-
-
-@router.post("", response_model=ChatResponse)
-async def chat(request: ChatRequest, db: Session = Depends(get_db)):
-    """Process a chat message and return an AI-generated response."""
     try:
-        print("--- CHAT REQUEST RECEIVED ---")
-        print(f"Message: {request.message}")
-        print(f"Language: {request.language}")
-        sys.stdout.flush()
-
-        # Check if Pinecone is initialized
-        if index is None:
-            raise Exception("Pinecone not initialized - check PINECONE_API_KEY and PINECONE_INDEX_NAME")
-
-        # Initialize services
-        print("Initializing translator...")
-        sys.stdout.flush()
-        translator = get_translator()
-
-        print("Initializing OpenAI embeddings...")
-        sys.stdout.flush()
-        embeddings = get_embeddings()
-
-        print("Initializing Groq LLM...")
-        sys.stdout.flush()
-        llm = get_groq_llm()
-
-        # Step 1: Translate to English if not already
-        print("Step 1: Processing language...")
-        sys.stdout.flush()
-        if request.language.lower() != "en":
-            english_query = await translator.translate(request.message, "English")
-            if english_query.startswith("[Translation Error]:"):
-                english_query = request.message
-        else:
-            english_query = request.message
-
-        # Step 2: Search Pinecone
-        print("Step 2: Searching Pinecone...")
-        sys.stdout.flush()
-        matches = search_pinecone(english_query, embeddings)
-        print(f"Found {len(matches)} matches")
-        sys.stdout.flush()
-
-        # Check for gap condition
-        top_score = matches[0].score if matches else 0.0
-        is_gap = top_score < GAP_THRESHOLD
-
-        # Extract citations and build context
-        citations = extract_citations(matches)
-        context = build_context(matches)
-
-        # Step 3: Generate response with Groq
-        print("Step 3: Generating response with Groq...")
-        sys.stdout.flush()
-        user_prompt = f"""Context from knowledge base:
-{context}
-
-User Question: {english_query}
-
-Please provide a helpful, empathetic response based on the context above."""
-
-        messages = [
-            SystemMessage(content=SYSTEM_PROMPT),
-            HumanMessage(content=user_prompt),
-        ]
-
-        ai_response = llm.invoke(messages)
-        english_response = ai_response.content
-        print(f"Groq response received: {len(english_response)} chars")
-        sys.stdout.flush()
-
-        # Step 4: Translate response back to user's language
-        print("Step 4: Translating response...")
-        sys.stdout.flush()
-        if request.language.lower() != "en":
-            final_response = await translator.translate(english_response, request.language)
-            if final_response.startswith("[Translation Error]:"):
-                final_response = english_response
-        else:
-            final_response = english_response
-
-        # Step 5: Log to database
-        print("Step 5: Logging to database...")
-        sys.stdout.flush()
-        chat_log = ChatLog(
-            query=request.message,
-            response=final_response,
-            lang=request.language,
-            is_gap=is_gap,
-            score=top_score,
+        # 2. Get Embedding (Simple, standard model)
+        # We use text-embedding-3-small because it fits your 1536 index
+        emb_resp = client.embeddings.create(
+            input=request.message,
+            model="text-embedding-3-small"
         )
-        db.add(chat_log)
-        db.commit()
-        db.refresh(chat_log)
+        vector = emb_resp.data[0].embedding
 
-        print(f"SUCCESS: Chat logged with ID {chat_log.id}")
-        sys.stdout.flush()
-
-        return ChatResponse(
-            response=final_response,
-            citations=citations,
-            chat_id=chat_log.id,
-            is_gap=is_gap,
+        # 3. Search Pinecone
+        print("🔍 Searching Vector DB...")
+        search_resp = index.query(
+            vector=vector,
+            top_k=3,
+            include_metadata=True
         )
+
+        # 4. Build Context
+        context = ""
+        for match in search_resp.matches:
+            if match.metadata and "text" in match.metadata:
+                context += match.metadata["text"] + "\n\n"
+        
+        if not context:
+            context = "No specific info found in documents."
+
+        # 5. Generate Answer
+        print("🤖 Generating Answer...")
+        completion = client.chat.completions.create(
+            messages=[
+                {"role": "system", "content": f"Answer based on this:\n{context}"},
+                {"role": "user", "content": request.message}
+            ],
+            model="gpt-3.5-turbo",
+        )
+
+        return {"response": completion.choices[0].message.content}
 
     except Exception as e:
-        print("--- CRITICAL REQUEST ERROR ---")
+        # This forces the "Silent Error" to show up in logs
+        print("--- 🔥 CRITICAL ERROR LOG 🔥 ---")
         print(traceback.format_exc())
         print("------------------------------")
-        sys.stdout.flush()
         raise HTTPException(status_code=500, detail=f"Internal Error: {str(e)}")
