@@ -135,4 +135,181 @@ function Dashboard() {
     <div className="min-h-screen bg-slate-100 dark:bg-slate-900">
       {/* Header */}
       <header className="bg-white dark:bg-slate-800 shadow-sm sticky top-0 z-10">
-        <div className="max-w-7xl mx-auto px-4 py-4 flex items-
+        <div className="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
+          <h1 className="text-xl font-bold text-slate-800 dark:text-white flex items-center gap-2">
+            Admin Dashboard
+            {loading && <RefreshCw className="w-4 h-4 animate-spin text-slate-400" />}
+          </h1>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={fetchStats}
+              className="p-2 text-slate-600 hover:bg-slate-100 rounded-lg dark:text-slate-300 dark:hover:bg-slate-700"
+              title="Refresh Data"
+            >
+              <RefreshCw className="w-5 h-5" />
+            </button>
+            <button
+              onClick={handleLogout}
+              className="flex items-center gap-2 px-4 py-2 border border-slate-300 dark:border-slate-600
+                         text-slate-700 dark:text-slate-300 rounded-lg
+                         hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors text-sm"
+            >
+              <LogOut className="w-4 h-4" />
+              Logout
+            </button>
+          </div>
+        </div>
+      </header>
+
+      {/* Main Content */}
+      <main className="max-w-7xl mx-auto px-4 py-6">
+        {/* Stats Summary */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+          <div className="bg-white dark:bg-slate-800 rounded-xl p-6 shadow-sm border border-slate-200 dark:border-slate-700">
+            <div className="flex items-center gap-3">
+              <div className="p-3 bg-red-100 dark:bg-red-900/30 rounded-lg">
+                <AlertTriangle className="w-6 h-6 text-red-600 dark:text-red-400" />
+              </div>
+              <div>
+                <p className="text-sm text-slate-500 dark:text-slate-400 font-medium">Knowledge Gaps Detected</p>
+                <p className="text-3xl font-bold text-slate-800 dark:text-white">
+                  {stats.gaps.length}
+                </p>
+              </div>
+            </div>
+          </div>
+          <div className="bg-white dark:bg-slate-800 rounded-xl p-6 shadow-sm border border-slate-200 dark:border-slate-700">
+            <div className="flex items-center gap-3">
+              <div className="p-3 bg-teal-100 dark:bg-teal-900/30 rounded-lg">
+                <MessageSquare className="w-6 h-6 text-teal-600 dark:text-teal-400" />
+              </div>
+              <div>
+                <p className="text-sm text-slate-500 dark:text-slate-400 font-medium">User Feedback Received</p>
+                <p className="text-3xl font-bold text-slate-800 dark:text-white">
+                  {stats.feedback.length}
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Tabs */}
+        <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm overflow-hidden border border-slate-200 dark:border-slate-700">
+          <div className="flex border-b border-slate-200 dark:border-slate-700">
+            <button
+              onClick={() => setActiveTab("gaps")}
+              className={`flex-1 px-6 py-4 text-sm font-medium transition-colors ${
+                activeTab === "gaps"
+                  ? "text-red-600 border-b-2 border-red-600 bg-red-50 dark:bg-red-900/10"
+                  : "text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"
+              }`}
+            >
+              Knowledge Gaps (Low Context Score)
+            </button>
+            <button
+              onClick={() => setActiveTab("feedback")}
+              className={`flex-1 px-6 py-4 text-sm font-medium transition-colors ${
+                activeTab === "feedback"
+                  ? "text-teal-600 border-b-2 border-teal-600 bg-teal-50 dark:bg-teal-900/10"
+                  : "text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"
+              }`}
+            >
+              User Ratings & Feedback
+            </button>
+          </div>
+
+          {/* Table Content */}
+          <div className="overflow-x-auto">
+            {activeTab === "gaps" ? (
+              <table className="w-full">
+                <thead className="bg-slate-50 dark:bg-slate-700/50">
+                  <tr>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">Time</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">Unanswered Question</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">Context Score</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-200 dark:divide-slate-700">
+                  {stats.gaps.length === 0 ? (
+                    <tr>
+                      <td colSpan={3} className="px-6 py-8 text-center text-slate-500">No gaps recorded yet. Good job!</td>
+                    </tr>
+                  ) : (
+                    stats.gaps.slice().reverse().map((gap, i) => (
+                      <tr key={i} className="hover:bg-slate-50 dark:hover:bg-slate-700/30">
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-500">{formatDate(gap.timestamp)}</td>
+                        <td className="px-6 py-4 text-sm text-slate-800 dark:text-slate-200 font-medium">{gap.question}</td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm">
+                          <span className={`px-2 py-1 rounded-full text-xs font-bold ${
+                            gap.score < 0.5 ? "bg-red-100 text-red-800" : "bg-orange-100 text-orange-800"
+                          }`}>
+                            {gap.score.toFixed(4)}
+                          </span>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            ) : (
+              <table className="w-full">
+                <thead className="bg-slate-50 dark:bg-slate-700/50">
+                  <tr>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">Time</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">Rating</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">Question</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">Reason/Comment</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-200 dark:divide-slate-700">
+                  {stats.feedback.length === 0 ? (
+                    <tr>
+                      <td colSpan={4} className="px-6 py-8 text-center text-slate-500">No feedback yet.</td>
+                    </tr>
+                  ) : (
+                    stats.feedback.slice().reverse().map((fb, i) => (
+                      <tr key={i} className="hover:bg-slate-50 dark:hover:bg-slate-700/30">
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-500">{formatDate(fb.timestamp)}</td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm">
+                          <span className={`px-2 py-1 rounded-full text-xs font-bold ${
+                            fb.rating >= 4 ? "bg-green-100 text-green-800" : 
+                            fb.rating === 3 ? "bg-yellow-100 text-yellow-800" : "bg-red-100 text-red-800"
+                          }`}>
+                            {fb.rating} ★
+                          </span>
+                        </td>
+                        <td className="px-6 py-4 text-sm text-slate-800 dark:text-slate-200">{fb.question}</td>
+                        <td className="px-6 py-4 text-sm text-slate-600 dark:text-slate-400 italic">
+                          {fb.reason || "-"}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
+      </main>
+    </div>
+  );
+}
+
+export default function AdminPage() {
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [checking, setChecking] = useState(true);
+
+  useEffect(() => {
+    const auth = localStorage.getItem("adminAuthenticated");
+    setIsAuthenticated(auth === "true");
+    setChecking(false);
+  }, []);
+
+  if (checking) return null;
+
+  if (!isAuthenticated) {
+    return <PinEntry onSuccess={() => setIsAuthenticated(true)} />;
+  }
+
+  return <Dashboard />;
+}
