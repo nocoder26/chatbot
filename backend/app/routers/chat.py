@@ -8,7 +8,6 @@ from openai import OpenAI
 router = APIRouter()
 
 # --- DIAGNOSTIC STARTUP ---
-# This prints to Railway logs immediately so we know if keys are wrong
 print("--- SYSTEM STARTUP CHECK ---")
 try:
     # 1. Setup Pinecone
@@ -31,7 +30,6 @@ try:
 except Exception as e:
     print(f"❌ STARTUP FAILED: {str(e)}")
     print(traceback.format_exc())
-    # We don't crash here so the server stays alive to report the error
     pc, index, client = None, None, None
 
 class ChatRequest(BaseModel):
@@ -47,8 +45,7 @@ async def chat_endpoint(request: ChatRequest):
         raise HTTPException(status_code=500, detail="Server failed to start AI tools. Check Railway logs.")
 
     try:
-        # 2. Get Embedding (Simple, standard model)
-        # We use text-embedding-3-small because it fits your 1536 index
+        # 2. Get Embedding
         emb_resp = client.embeddings.create(
             input=request.message,
             model="text-embedding-3-small"
@@ -85,7 +82,6 @@ async def chat_endpoint(request: ChatRequest):
         return {"response": completion.choices[0].message.content}
 
     except Exception as e:
-        # This forces the "Silent Error" to show up in logs
         print("--- 🔥 CRITICAL ERROR LOG 🔥 ---")
         print(traceback.format_exc())
         print("------------------------------")
