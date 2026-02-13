@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.routers import chat, admin  # Make sure to import routers if you split them, or just chat
+from app.routers import chat
 from dotenv import load_dotenv
 import os
 
@@ -9,7 +9,8 @@ load_dotenv()
 app = FastAPI()
 
 # --- CORS SETTINGS (THE CRITICAL FIX) ---
-# allow_origins=["*"] allows ALL websites (including Vercel) to connect.
+# allow_origins=["*"] tells the server to accept requests from ANY website.
+# This fixes the "blocked by CORS policy" error instantly.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], 
@@ -18,11 +19,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- CONNECT ROUTERS ---
+# --- CONNECT THE CHAT LOGIC ---
 app.include_router(chat.router)
-# If you created a separate admin.py router, include it here. 
-# If admin logic is in chat.py, you don't need the line below.
-# app.include_router(admin.router) 
 
 @app.get("/")
 def root():
