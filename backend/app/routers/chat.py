@@ -82,7 +82,7 @@ async def chat_endpoint(request: ChatRequest, background_tasks: BackgroundTasks)
 
     try:
         # 1. Embed Question
-        emb_resp = openai_client.embeddings.create(input=request.message, model="text-embedding-3-small")
+        emb_resp = openai_client.embeddings.create(input=request.message, model="text-embedding-ada-002")
         vector = emb_resp.data[0].embedding
 
         # 2. Check Cache First (High Efficiency)
@@ -156,7 +156,7 @@ async def submit_feedback(feedback: FeedbackRequest):
     # 2. "Train" the system (Cache 5-star answers)
     if feedback.rating == 5:
         try:
-            emb_resp = openai_client.embeddings.create(input=feedback.question, model="text-embedding-3-small")
+            emb_resp = openai_client.embeddings.create(input=feedback.question, model="text-embedding-ada-002")
             vector = emb_resp.data[0].embedding
             index.upsert(
                 vectors=[{
