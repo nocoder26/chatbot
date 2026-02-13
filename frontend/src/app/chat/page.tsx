@@ -3,7 +3,8 @@
 import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
-import { Send, ArrowLeft, Loader2, Sparkles, BookOpen, Heart, Activity, Coins } from "lucide-react";
+import { Send, ArrowLeft, Loader2, Sparkles, BookOpen, Heart, Activity, Coins, Paperclip } from "lucide-react";
+import BloodWorkConfirm from "@/components/BloodWorkConfirm"; // Import the Step 4 Component
 
 // --- FULL LOCALIZATION DICTIONARY ---
 const TRANSLATIONS: any = {
@@ -50,7 +51,7 @@ const TRANSLATIONS: any = {
     disclaimer: "Izana AI चिकित्सा निदान प्रदान नहीं करता है। हमेशा डॉक्टर से सलाह लें। 24 घंटे में चैट हटा दी जाती है।", 
     rate: "मूल्यांकन करें",
     shadow: "पूछें: \"आईवीएफ सफलता दर कैसे बढ़ाएं?\"",
-    t_ivf: "आईवीएफ प्रक्रिया", t_success: "सफलता दर", t_emotion: "भावनात्मक समर्थन", t_life: "जीवनशैली और आहार", t_cost: "लागत और वित्तीय"
+    t_ivf: "आईवीएफ प्रक्रिया", t_success: "सफलता दर", t_emotion: "भावनात्मक समर्थन", t_life: "जीवनशैली और आहार", t_cost: "लाগত और वित्तीय"
   },
   ta: {
     morning: "காலை வணக்கம்", afternoon: "மதிய வணக்கம்", evening: "மாலை வணக்கம்",
@@ -110,9 +111,12 @@ export default function ChatPage() {
   const [ratingModal, setRatingModal] = useState<any>(null);
   const [timeOfDay, setTimeOfDay] = useState<"morning" | "afternoon" | "evening">("morning");
   
+  // STEP 5: New states for blood work handling
+  const [verificationData, setVerificationData] = useState<any>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  
   const messagesEndRef = useRef<HTMLDivElement>(null);
   
-  // Dynamic Translation Object
   const t = TRANSLATIONS[langCode] || TRANSLATIONS["en"];
 
   useEffect(() => {
@@ -134,6 +138,62 @@ export default function ChatPage() {
   }, [isLoading]);
 
   useEffect(() => messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }), [messages, loadingStep]);
+
+  // STEP 5: Handle File Upload and Vision Extraction
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsLoading(true);
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/analyze-bloodwork`, {
+        method: 'POST',
+        body: formData,
+      });
+      const data = await res.json();
+      // Set the extracted data to trigger the Verification Form (Step 4)
+      setVerificationData(data);
+    } catch (err) {
+      console.error("Upload error", err);
+      setMessages(prev => [...prev, { id: Date.now(), type: "bot", content: "Could not read the report. Please try a clearer photo." }]);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // STEP 5: Handle the final confirmation from Step 4 UI
+  const onFinalConfirm = async (confirmedData: any) => {
+    setVerificationData(null); // Close the form
+    setIsLoading(true);
+    
+    // Add a fake user message to the chat showing we are analyzing
+    const userMsg = { id: Date.now(), type: "user", content: "Analyzing my confirmed blood work results..." };
+    setMessages(prev => [...prev, userMsg]);
+
+    try {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        // Pass the blood work data along with the request
+        body: JSON.stringify({ 
+          message: "Analyze these blood results", 
+          language: langCode, 
+          clinical_data: confirmedData 
+        })
+      });
+      const data = await res.json();
+      setMessages(prev => [...prev, { 
+        id: Date.now() + 1, type: "bot", content: data.response, citations: data.citations
+      }]);
+    } catch {
+      setMessages(prev => [...prev, { id: Date.now(), type: "bot", content: "Analysis failed. Please try again." }]);
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   const handleSend = async (text = input) => {
     if (!text.trim() || isLoading) return;
@@ -197,16 +257,23 @@ export default function ChatPage() {
 
       {/* Chat Area */}
       <div className="flex-1 overflow-y-auto p-4 relative">
+        {/* STEP 5: Overlay the Verification Form if data is pending */}
+        <AnimatePresence>
+          {verificationData && (
+            <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.9 }} className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+               <BloodWorkConfirm initialData={verificationData} onConfirm={onFinalConfirm} />
+            </motion.div>
+          )}
+        </AnimatePresence>
+
         {messages.length === 0 ? (
           <div className="h-full flex flex-col items-center justify-center -mt-10">
-            {/* Dynamic Greeting */}
             <h2 className="text-3xl font-light text-slate-800 dark:text-white mb-8 text-center">
               <span className="font-bold text-teal-600">{t[timeOfDay]}</span>
             </h2>
             
             <p className="text-xs text-slate-400 uppercase tracking-widest font-semibold mb-4 text-center">{t.topics}</p>
             
-            {/* Dynamic Topics Grid */}
             <div className="grid grid-cols-2 md:grid-cols-3 gap-3 w-full max-w-2xl px-4">
               {TOPIC_ICONS.map((topic, i) => (
                 <button 
@@ -231,7 +298,6 @@ export default function ChatPage() {
                 <div className={`max-w-[90%] rounded-2xl p-5 ${m.type === 'user' ? 'bg-slate-200 dark:bg-slate-700 text-slate-800 dark:text-white rounded-br-none' : 'bg-teal-600 text-white shadow-lg rounded-bl-none'}`}>
                   <div className="whitespace-pre-wrap leading-relaxed">{m.content}</div>
                   
-                  {/* Citations */}
                   {m.citations && m.citations.length > 0 && (
                     <div className="mt-4 pt-3 border-t border-white/20">
                       <p className="text-[10px] font-bold uppercase tracking-wider opacity-80 mb-2">Citations</p>
@@ -243,7 +309,6 @@ export default function ChatPage() {
                     </div>
                   )}
 
-                  {/* Rating */}
                   {m.type === 'bot' && (
                     <div className="mt-4 flex items-center gap-2 justify-end opacity-90">
                       <span className="text-xs font-medium">{t.rate}:</span>
@@ -258,7 +323,6 @@ export default function ChatPage() {
               </div>
             ))}
             
-            {/* Loading Steps */}
             {isLoading && (
                <div className="flex justify-start">
                <div className="bg-white dark:bg-slate-800 border border-teal-100 dark:border-slate-700 rounded-2xl p-4 flex items-center gap-3 shadow-sm">
@@ -277,24 +341,41 @@ export default function ChatPage() {
       {/* Input Area */}
       <div className="p-4 bg-white dark:bg-slate-800 border-t border-slate-100 dark:border-slate-700 relative">
         <div className="max-w-3xl mx-auto relative">
-           {/* Dynamic Shadow Text */}
            {!input && !isLoading && (
             <span className="absolute left-16 top-4 text-slate-300 dark:text-slate-600 pointer-events-none italic hidden sm:block truncate w-2/3">
               {t.shadow}
             </span>
           )}
-          <div className="relative">
+          <div className="flex items-center gap-2">
+            {/* STEP 5: Added Hidden File Input and Paperclip Button */}
             <input 
-              value={input} 
-              onChange={(e) => setInput(e.target.value)} 
-              onKeyDown={(e) => e.key === 'Enter' && handleSend()} 
-              disabled={isLoading} 
-              placeholder={t.placeholder} 
-              className="w-full pl-6 pr-14 py-4 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-600 rounded-full focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-inner text-slate-800 dark:text-white placeholder-transparent sm:placeholder-slate-400" 
+              type="file" 
+              accept="image/*" 
+              className="hidden" 
+              ref={fileInputRef} 
+              onChange={handleFileUpload} 
             />
-            <button onClick={() => handleSend()} disabled={isLoading || !input} className="absolute right-2 top-2 p-2 bg-teal-600 rounded-full text-white hover:bg-teal-700 disabled:opacity-50 transition-all shadow-md">
-              <Send className="w-5 h-5" />
+            <button 
+              onClick={() => fileInputRef.current?.click()} 
+              disabled={isLoading}
+              className="p-3 bg-slate-100 dark:bg-slate-700 rounded-full text-slate-500 hover:text-teal-600 transition-colors"
+            >
+              <Paperclip className="w-5 h-5" />
             </button>
+
+            <div className="relative flex-1">
+              <input 
+                value={input} 
+                onChange={(e) => setInput(e.target.value)} 
+                onKeyDown={(e) => e.key === 'Enter' && handleSend()} 
+                disabled={isLoading} 
+                placeholder={t.placeholder} 
+                className="w-full pl-6 pr-14 py-4 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-600 rounded-full focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-inner text-slate-800 dark:text-white" 
+              />
+              <button onClick={() => handleSend()} disabled={isLoading || !input} className="absolute right-2 top-2 p-2 bg-teal-600 rounded-full text-white hover:bg-teal-700 disabled:opacity-50 transition-all shadow-md">
+                <Send className="w-5 h-5" />
+              </button>
+            </div>
           </div>
           <p className="text-[10px] text-center text-slate-400 mt-3 max-w-xl mx-auto leading-tight opacity-70">
             {t.disclaimer}
