@@ -1,15 +1,13 @@
+import os
+import traceback
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.routers import chat
-import os
-from dotenv import load_dotenv
-
-# Load environment variables
-load_dotenv()
+from pinecone import Pinecone
 
 app = FastAPI()
 
-# --- CORS SETUP (Allows Vercel to talk to Railway) ---
+# --- CORS SETUP ---
 origins = [
     "http://localhost:3000",
     "https://chatbot-chi-amber.vercel.app",
@@ -24,10 +22,37 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- CONNECT THE CHAT ROUTER ---
-# This line is crucial. It tells the app to use the file you just edited.
+# --- CONNECT ROUTERS ---
 app.include_router(chat.router)
 
 @app.get("/")
 def root():
-    return {"status": "Active", "message": "Fertility Bot Backend is Running"}
+    return {"status": "Active", "message": "Fertility Bot Online"}
+
+# --- DIAGNOSTICS ENDPOINT (The Fix) ---
+@app.get("/diagnose")
+def diagnose_system():
+    results = {"status": "checking"}
+    
+    # 1. Check Keys
+    results["keys"] = {
+        "OPENAI_KEY_PRESENT": bool(os.getenv("OPENAI_API_KEY")),
+        "PINECONE_KEY_PRESENT": bool(os.getenv("PINECONE_API_KEY")),
+        "PINECONE_INDEX_NAME": os.getenv("PINECONE_INDEX_NAME"),
+        "PINECONE_ENV": os.getenv("PINECONE_ENVIRONMENT")
+    }
+
+    # 2. Test Pinecone Connection
+    try:
+        pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
+        index_name = os.getenv("PINECONE_INDEX_NAME")
+        index = pc.Index(index_name)
+        stats = index.describe_index_stats()
+        results["pinecone_connection"] = "SUCCESS"
+        results["index_stats"] = str(stats)
+    except Exception as e:
+        results["pinecone_connection"] = "FAILED"
+        results["error"] = str(e)
+        results["traceback"] = traceback.format_exc()
+
+    return results
