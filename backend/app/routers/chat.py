@@ -1,6 +1,7 @@
 import os
 import sys
 import traceback
+import logging
 from typing import List
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -14,18 +15,16 @@ from app.database import get_db
 from app.models import ChatLog
 from app.services.translator import RunPodTranslator
 
-
-def log(message: str):
-    """Print and flush immediately to ensure Railway logs capture it."""
-    print(message)
-    sys.stdout.flush()
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 # Configuration
 GAP_THRESHOLD = 0.75
 TOP_K_RESULTS = 3
-INDEX_NAME = "reproductive-health"
+INDEX_NAME = os.environ.get("PINECONE_INDEX_NAME", "reproductive-health")
 
 SYSTEM_PROMPT = """You are an empathetic and knowledgeable Reproductive Health Assistant.
 
@@ -52,44 +51,41 @@ class ChatResponse(BaseModel):
     is_gap: bool
 
 
-# Initialize services
 def get_translator():
     return RunPodTranslator()
 
 
 def get_pinecone_index():
-    pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
-    return pc.Index(INDEX_NAME)
+    """Initialize Pinecone with new v3 syntax."""
+    pc = Pinecone(api_key=os.environ.get("PINECONE_API_KEY"))
+    return pc.Index(os.environ.get("PINECONE_INDEX_NAME", "reproductive-health"))
 
 
 def get_embeddings():
-    # text-embedding-ada-002 outputs 1536 dimensions (matches Pinecone index)
+    """OpenAI embeddings - text-embedding-ada-002 outputs 1536 dimensions."""
     return OpenAIEmbeddings(
-        api_key=os.getenv("OPENAI_API_KEY"),
+        api_key=os.environ.get("OPENAI_API_KEY"),
         model="text-embedding-ada-002",
     )
 
 
 def get_groq_llm():
-    # Using llama-3.1-8b-instant for fast, reliable responses
-    # Alternative: llama-3.1-70b-versatile, llama3-8b-8192, mixtral-8x7b-32768
+    """Groq LLM - using llama-3.1-8b-instant for fast responses."""
     return ChatGroq(
-        api_key=os.getenv("GROQ_API_KEY"),
+        api_key=os.environ.get("GROQ_API_KEY"),
         model_name="llama-3.1-8b-instant",
         temperature=0.7,
     )
 
 
-async def search_pinecone(query: str, index, embeddings, top_k: int = TOP_K_RESULTS):
+def search_pinecone(query: str, index, embeddings, top_k: int = TOP_K_RESULTS):
     """Search Pinecone for relevant context."""
     query_vector = embeddings.embed_query(query)
-
     results = index.query(
         vector=query_vector,
         top_k=top_k,
         include_metadata=True,
     )
-
     return results.matches
 
 
@@ -115,46 +111,46 @@ def build_context(matches) -> str:
 
 @router.post("", response_model=ChatResponse)
 async def chat(request: ChatRequest, db: Session = Depends(get_db)):
-    """
-    Process a chat message and return an AI-generated response.
-
-    Flow:
-    1. Translate message to English (if needed)
-    2. Search Pinecone for relevant context
-    3. Generate response using Groq (Llama-3 70B)
-    4. Translate response back to user's language
-    5. Log interaction to database
-    """
+    """Process a chat message and return an AI-generated response."""
     try:
-        log(f"CHAT REQUEST: message='{request.message}', language='{request.language}'")
+        print("--- CHAT REQUEST RECEIVED ---")
+        print(f"Message: {request.message}")
+        print(f"Language: {request.language}")
+        sys.stdout.flush()
 
         # Initialize services
-        log("Initializing translator...")
+        print("Initializing translator...")
+        sys.stdout.flush()
         translator = get_translator()
 
-        log(f"Initializing Pinecone with API key: {os.getenv('PINECONE_API_KEY')[:10] if os.getenv('PINECONE_API_KEY') else 'MISSING'}...")
+        print("Initializing Pinecone...")
+        sys.stdout.flush()
         index = get_pinecone_index()
 
-        log(f"Initializing OpenAI embeddings with API key: {os.getenv('OPENAI_API_KEY')[:10] if os.getenv('OPENAI_API_KEY') else 'MISSING'}...")
+        print("Initializing OpenAI embeddings...")
+        sys.stdout.flush()
         embeddings = get_embeddings()
 
-        log(f"Initializing Groq LLM with API key: {os.getenv('GROQ_API_KEY')[:10] if os.getenv('GROQ_API_KEY') else 'MISSING'}...")
+        print("Initializing Groq LLM...")
+        sys.stdout.flush()
         llm = get_groq_llm()
 
         # Step 1: Translate to English if not already
-        log("Step 1: Processing language...")
+        print("Step 1: Processing language...")
+        sys.stdout.flush()
         if request.language.lower() != "en":
             english_query = await translator.translate(request.message, "English")
             if english_query.startswith("[Translation Error]:"):
-                english_query = request.message  # Fallback to original
+                english_query = request.message
         else:
             english_query = request.message
-        log(f"English query: {english_query}")
 
         # Step 2: Search Pinecone
-        log("Step 2: Searching Pinecone...")
-        matches = await search_pinecone(english_query, index, embeddings)
-        log(f"Found {len(matches)} matches")
+        print("Step 2: Searching Pinecone...")
+        sys.stdout.flush()
+        matches = search_pinecone(english_query, index, embeddings)
+        print(f"Found {len(matches)} matches")
+        sys.stdout.flush()
 
         # Check for gap condition
         top_score = matches[0].score if matches else 0.0
@@ -165,7 +161,8 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
         context = build_context(matches)
 
         # Step 3: Generate response with Groq
-        log("Step 3: Generating response with Groq...")
+        print("Step 3: Generating response with Groq...")
+        sys.stdout.flush()
         user_prompt = f"""Context from knowledge base:
 {context}
 
@@ -180,19 +177,22 @@ Please provide a helpful, empathetic response based on the context above."""
 
         ai_response = llm.invoke(messages)
         english_response = ai_response.content
-        log(f"Groq response received: {len(english_response)} chars")
+        print(f"Groq response received: {len(english_response)} chars")
+        sys.stdout.flush()
 
         # Step 4: Translate response back to user's language
-        log("Step 4: Translating response...")
+        print("Step 4: Translating response...")
+        sys.stdout.flush()
         if request.language.lower() != "en":
             final_response = await translator.translate(english_response, request.language)
             if final_response.startswith("[Translation Error]:"):
-                final_response = english_response  # Fallback to English
+                final_response = english_response
         else:
             final_response = english_response
 
         # Step 5: Log to database
-        log("Step 5: Logging to database...")
+        print("Step 5: Logging to database...")
+        sys.stdout.flush()
         chat_log = ChatLog(
             query=request.message,
             response=final_response,
@@ -203,9 +203,10 @@ Please provide a helpful, empathetic response based on the context above."""
         db.add(chat_log)
         db.commit()
         db.refresh(chat_log)
-        log(f"Chat logged with ID: {chat_log.id}")
 
-        log("SUCCESS: Returning response")
+        print(f"SUCCESS: Chat logged with ID {chat_log.id}")
+        sys.stdout.flush()
+
         return ChatResponse(
             response=final_response,
             citations=citations,
@@ -214,23 +215,12 @@ Please provide a helpful, empathetic response based on the context above."""
         )
 
     except Exception as e:
-        # Force error to show in Railway logs
-        error_traceback = traceback.format_exc()
-
-        # Print to both stdout and stderr to ensure Railway captures it
-        error_msg = f"""
-==================================================
-CHAT ENDPOINT ERROR:
-Error Type: {type(e).__name__}
-Error Message: {str(e)}
-Full Traceback:
-{error_traceback}
-==================================================
-"""
-        print(error_msg)
+        print("--- CRITICAL ERROR ---")
+        print(traceback.format_exc())
+        print("----------------------")
         sys.stdout.flush()
-        sys.stderr.write(error_msg)
+        sys.stderr.write("--- CRITICAL ERROR ---\n")
+        sys.stderr.write(traceback.format_exc())
+        sys.stderr.write("----------------------\n")
         sys.stderr.flush()
-
-        # Return simple string error to frontend
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Internal Error: {str(e)}")

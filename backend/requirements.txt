@@ -1,8 +1,10 @@
-fastapi
-uvicorn[standard]
+fastapi>=0.100.0
+uvicorn>=0.23.0
 pydantic
 httpx
-pinecone
+pinecone-client>=3.1.0
+openai>=1.10.0
+groq>=0.4.0
 langchain
 langchain-community
 langchain-text-splitters
