@@ -214,22 +214,23 @@ Please provide a helpful, empathetic response based on the context above."""
         )
 
     except Exception as e:
-        # Log the full error to terminal for debugging - use log() to flush immediately
-        import traceback
+        # Force error to show in Railway logs
         error_traceback = traceback.format_exc()
-        log("=" * 50)
-        log("CHAT ENDPOINT ERROR:")
-        log(f"Error Type: {type(e).__name__}")
-        log(f"Error Message: {str(e)}")
-        log("Full Traceback:")
-        log(error_traceback)
-        log("=" * 50)
-        # Return clear JSON error message to frontend
-        raise HTTPException(
-            status_code=500,
-            detail={
-                "error": str(e),
-                "error_type": type(e).__name__,
-                "traceback": error_traceback
-            }
-        )
+
+        # Print to both stdout and stderr to ensure Railway captures it
+        error_msg = f"""
+==================================================
+CHAT ENDPOINT ERROR:
+Error Type: {type(e).__name__}
+Error Message: {str(e)}
+Full Traceback:
+{error_traceback}
+==================================================
+"""
+        print(error_msg)
+        sys.stdout.flush()
+        sys.stderr.write(error_msg)
+        sys.stderr.flush()
+
+        # Return simple string error to frontend
+        raise HTTPException(status_code=500, detail=str(e))
