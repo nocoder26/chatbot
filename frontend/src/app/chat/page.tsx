@@ -86,19 +86,25 @@ export default function ChatPage() {
 
     try {
       const response: ChatResponse = await sendMessage(input.trim(), language);
+      
+      // Backend returns { response: "..." }
+      // We parse it for any inline citations like [Source: X]
       const { content, citations } = parseCitations(response.response);
 
       const botMessage: Message = {
         id: (Date.now() + 1).toString(),
         type: "bot",
         content,
-        citations: [...citations, ...response.citations.filter((c) => !citations.includes(c))],
+        // --- FIX APPLIED HERE ---
+        // We added "|| []" to response.citations to prevent the crash if it's undefined
+        citations: [...citations, ...(response.citations || []).filter((c) => !citations.includes(c))],
         chatId: response.chat_id,
         isGap: response.is_gap,
       };
 
       setMessages((prev) => [...prev, botMessage]);
     } catch (error) {
+      console.error("Chat error:", error); // Helpful for debugging
       const errorMessage: Message = {
         id: (Date.now() + 1).toString(),
         type: "bot",
@@ -107,7 +113,8 @@ export default function ChatPage() {
       setMessages((prev) => [...prev, errorMessage]);
     } finally {
       setIsLoading(false);
-      inputRef.current?.focus();
+      // Wait a tick for the DOM to update before focusing
+      setTimeout(() => inputRef.current?.focus(), 10);
     }
   };
 
@@ -236,15 +243,15 @@ export default function ChatPage() {
             placeholder="Type your question..."
             disabled={isLoading}
             className="flex-1 px-4 py-3 rounded-full border border-slate-300 dark:border-slate-600
-                       bg-slate-50 dark:bg-slate-700 text-slate-800 dark:text-white
-                       placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-500
-                       disabled:opacity-50"
+                        bg-slate-50 dark:bg-slate-700 text-slate-800 dark:text-white
+                        placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-500
+                        disabled:opacity-50"
           />
           <button
             onClick={handleSend}
             disabled={isLoading || !input.trim()}
             className="p-3 rounded-full bg-teal-600 text-white hover:bg-teal-700
-                       transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <Send className="w-5 h-5" />
           </button>
