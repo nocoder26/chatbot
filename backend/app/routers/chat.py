@@ -1,13 +1,13 @@
 import os
 import json
 import uuid
-import time
 from datetime import datetime, timedelta
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from pinecone import Pinecone
 from openai import OpenAI
 from groq import Groq
+import traceback
 
 router = APIRouter()
 
@@ -47,7 +47,6 @@ def cleanup_logs():
             if os.path.exists(filepath):
                 with open(filepath, "r") as f:
                     logs = json.load(f)
-                # Keep only recent logs
                 new_logs = [log for log in logs if datetime.fromisoformat(log["timestamp"]) > cutoff]
                 with open(filepath, "w") as f:
                     json.dump(new_logs, f, indent=2)
@@ -77,106 +76,16 @@ def save_log(filepath, entry):
 async def chat_endpoint(request: ChatRequest, background_tasks: BackgroundTasks):
     if not groq_client: raise HTTPException(500, "AI not ready")
     
-    # Schedule privacy cleanup
     background_tasks.add_task(cleanup_logs)
 
     try:
-        # 1. Embed Question
-        emb_resp = openai_client.embeddings.create(input=request.message, model="text-embedding-ada-002")
+        # 1. Embed Question (Using ada-002 for high compatibility)
+        emb_resp = openai_client.embeddings.create(
+            input=request.message, 
+            model="text-embedding-ada-002"
+        )
         vector = emb_resp.data[0].embedding
 
-        # 2. Check Cache First (High Efficiency)
+        # 2. Check Cache
         cache_resp = index.query(namespace=CACHE_NAMESPACE, vector=vector, top_k=1, include_metadata=True)
-        if cache_resp.matches and cache_resp.matches[0].score > 0.95:
-            return {
-                "response": cache_resp.matches[0].metadata["response"],
-                "is_cached": True,
-                "citations": ["Trusted Previous Answer"]
-            }
-
-        # 3. Search Knowledge Base
-        search_resp = index.query(vector=vector, top_k=4, include_metadata=True)
-        context_text = ""
-        citations = []
-        highest_score = 0.0
-
-        for match in search_resp.matches:
-            if match.score > highest_score: highest_score = match.score
-            if match.score > 0.75:
-                source = match.metadata.get("source", "Medical Database")
-                context_text += f"[Source: {source}]: {match.metadata.get('text', '')}\n\n"
-                if source not in citations: citations.append(source)
-
-        # 4. Gap Detection
-        if highest_score < 0.75:
-            log_gap(request.message, highest_score)
-            context_text += "[Source: General Medical Knowledge]: (Using general medical knowledge to supplement.)\n"
-            citations.append("General Medical Knowledge")
-
-        # 5. Generate Response
-        system_prompt = f"""
-        You are an empathetic fertility assistant. Language: {request.language}.
-        
-        RULES:
-        1. Use the CONTEXT. If empty, use general knowledge but cite it as 'General Medical Knowledge'.
-        2. TONE: Warm, hopeful, caregiver style.
-        3. ENDING: Always end with a short, gentle leading question.
-        4. CITATIONS: Use [Source: Name] inline.
-        
-        CONTEXT:
-        {context_text}
-        """
-
-        completion = groq_client.chat.completions.create(
-            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": request.message}],
-            model="llama-3.3-70b-versatile",
-            temperature=0.3
-        )
-        
-        return {
-            "response": completion.choices[0].message.content,
-            "citations": citations
-        }
-
-    except Exception as e:
-        print(traceback.format_exc())
-        raise HTTPException(500, str(e))
-
-@router.post("/feedback")
-async def submit_feedback(feedback: FeedbackRequest):
-    # 1. Log the feedback for Admin Dashboard
-    entry = {
-        "timestamp": datetime.now().isoformat(),
-        "rating": feedback.rating,
-        "question": feedback.question,
-        "reason": feedback.reason
-    }
-    save_log(FEEDBACK_LOG_FILE, entry)
-
-    # 2. "Train" the system (Cache 5-star answers)
-    if feedback.rating == 5:
-        try:
-            emb_resp = openai_client.embeddings.create(input=feedback.question, model="text-embedding-ada-002")
-            vector = emb_resp.data[0].embedding
-            index.upsert(
-                vectors=[{
-                    "id": str(uuid.uuid4()),
-                    "values": vector,
-                    "metadata": {"question": feedback.question, "response": feedback.answer}
-                }],
-                namespace=CACHE_NAMESPACE
-            )
-            return {"status": "System learned from this feedback"}
-        except Exception as e:
-            print(f"Cache Error: {e}")
-    
-    return {"status": "Feedback recorded"}
-
-@router.get("/admin/stats")
-async def get_stats():
-    gaps, feedback = [], []
-    if os.path.exists(GAP_LOG_FILE):
-        with open(GAP_LOG_FILE) as f: gaps = json.load(f)
-    if os.path.exists(FEEDBACK_LOG_FILE):
-        with open(FEEDBACK_LOG_FILE) as f: feedback = json.load(f)
-    return {"gaps": gaps, "feedback": feedback}
+        if cache_resp.matches and cache
