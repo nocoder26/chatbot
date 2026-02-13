@@ -65,9 +65,11 @@ def get_embeddings():
 
 
 def get_groq_llm():
+    # Using llama-3.1-8b-instant for fast, reliable responses
+    # Alternative: llama-3.1-70b-versatile, llama3-8b-8192, mixtral-8x7b-32768
     return ChatGroq(
         api_key=os.getenv("GROQ_API_KEY"),
-        model_name="llama3-70b-8192",
+        model_name="llama-3.1-8b-instant",
         temperature=0.7,
     )
 
