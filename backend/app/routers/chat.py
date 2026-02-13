@@ -208,12 +208,20 @@ Please provide a helpful, empathetic response based on the context above."""
 
     except Exception as e:
         # Log the full error to terminal for debugging
+        error_traceback = traceback.format_exc()
         print("=" * 50)
         print("CHAT ENDPOINT ERROR:")
         print(f"Error Type: {type(e).__name__}")
         print(f"Error Message: {str(e)}")
         print("Full Traceback:")
-        traceback.print_exc()
+        print(error_traceback)
         print("=" * 50)
-        # Re-raise to let global handler return full error to frontend
-        raise
+        # Return clear JSON error message to frontend
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": str(e),
+                "error_type": type(e).__name__,
+                "traceback": error_traceback
+            }
+        )
