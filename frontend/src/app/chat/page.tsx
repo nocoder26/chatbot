@@ -37,7 +37,6 @@ const TOPIC_ICONS = [
 
 const LOADING_STEPS = ["Understanding your needs...", "Reading medical knowledge...", "Writing a caring response...", "Almost there..."];
 
-// --- BULLETPROOF FORMATTERS ---
 const cleanCitation = (raw: any) => {
   try {
     let cleaned = String(raw || "").replace(/\\/g, '/').split('/').pop() || String(raw);
@@ -51,47 +50,37 @@ const cleanCitation = (raw: any) => {
   }
 };
 
-const formatText = (rawText: any) => {
-  // Guaranteed fallback string conversion
-  const text = typeof rawText === 'string' ? rawText : String(rawText || "");
-  let clean = text.replace(/\*\*\s*\n/g, ''); 
-  clean = clean.replace(/—/g, '-'); 
-  
-  const parts = clean.split('**');
-  return parts.map((part, i) => {
-    if (i % 2 === 1 && part.trim().length > 0) {
-      return <strong key={i} className="block mt-5 mb-1 text-[16px] sm:text-[17px] font-extrabold tracking-wide text-teal-950 dark:text-teal-100 drop-shadow-sm">{part}</strong>;
-    }
-    return <span key={i}>{part.replace(/\*/g, '')}</span>;
-  });
-};
-
-// --- BULLETPROOF TYPEWRITER COMPONENT ---
+// --- SLOWER, SAFE TYPEWRITER COMPONENT ---
 const TypewriterText = ({ text, onComplete, onTick }: { text: any, onComplete: () => void, onTick: () => void }) => {
-  // Force absolute safe string conversion to prevent `.substring is not a function` error
-  const safeText = Array.isArray(text) ? text.join('\n\n') : (typeof text === 'object' ? JSON.stringify(text) : String(text || ""));
-  
+  // Ultra-safe parser to prevent crash
+  let safeText = "";
+  if (typeof text === 'string') safeText = text;
+  else if (Array.isArray(text)) safeText = text.join('\n\n');
+  else if (typeof text === 'object' && text !== null) safeText = Object.values(text).join('\n\n');
+  else safeText = String(text || "");
+
+  // Wipe out any markdown that managed to slip through
+  safeText = safeText.replace(/\*\*/g, '').replace(/\*/g, ''); 
+
   const [displayedLength, setDisplayedLength] = useState(0);
   
   useEffect(() => {
     let currentLen = 0;
-    const stepSize = Math.max(1, Math.floor(safeText.length / 100)); 
-    
+    // Slower, natural reading speed (approx 50 chars per second)
     const timer = setInterval(() => {
-      currentLen += stepSize; 
+      currentLen += 1; 
       setDisplayedLength(currentLen);
       onTick();
       if (currentLen >= safeText.length) {
         clearInterval(timer);
         onComplete();
       }
-    }, 15); 
+    }, 20); 
     
     return () => clearInterval(timer);
   }, [safeText, onComplete, onTick]);
 
-  // Using .slice() which is universally safer on JS objects than .substring()
-  return <>{formatText(safeText.slice(0, displayedLength))}</>;
+  return <>{safeText.slice(0, displayedLength)}</>;
 };
 
 export default function ChatPage() {
@@ -143,7 +132,7 @@ export default function ChatPage() {
     }
     
     setInput("");
-    setIsLoading(true);
+    setIsLoading(true); // This instantly flips the UI state
 
     try {
       const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/chat`, {
@@ -153,7 +142,6 @@ export default function ChatPage() {
       });
       const data = await res.json();
       
-      // CRITICAL SAFETY CHECK: Intercept and force valid arrays/strings
       const safeResponse = Array.isArray(data.response) ? data.response.join('\n\n') : String(data.response || "No response received.");
       const safeCitations = Array.isArray(data.citations) ? data.citations.map((c: any) => cleanCitation(c)) : [];
       const safeQuestions = Array.isArray(data.suggested_questions) ? data.suggested_questions.map((q: any) => String(q)) : [];
@@ -217,7 +205,9 @@ export default function ChatPage() {
 
       {/* Main Chat Area */}
       <div className="flex-1 overflow-y-auto p-4 relative chat-container pb-10">
-        {messages.length === 0 ? (
+        
+        {/* CRITICAL FIX: Ensure loading state immediately switches UI to chat mode */}
+        {messages.length === 0 && !isLoading ? (
           <div className="h-full flex flex-col items-center justify-center -mt-4">
             <motion.h2 initial={{opacity:0, y:10}} animate={{opacity:1, y:0}} className="text-3xl font-light text-slate-800 dark:text-white mb-8 text-center">
               <span className="font-bold text-teal-700">{getText(timeOfDay)}</span>
@@ -244,7 +234,8 @@ export default function ChatPage() {
                     {m.isAnimating ? (
                       <TypewriterText text={m.content} onComplete={() => markAnimationComplete(m.id)} onTick={scrollToBottomInstant} />
                     ) : (
-                      formatText(m.content)
+                      // Ensure text is clean string after animation too
+                      (typeof m.content === 'string' ? m.content : String(m.content)).replace(/\*\*/g, '').replace(/\*/g, '')
                     )}
                   </div>
                   
