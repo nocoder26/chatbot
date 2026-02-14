@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
-import { Send, ArrowLeft, Loader2, Sparkles, BookOpen, Heart, Activity, CheckCircle2, ChevronRight, Moon } from "lucide-react";
+import { Send, ArrowLeft, Loader2, Sparkles, BookOpen, Heart, Activity, CheckCircle2, ChevronRight, Dumbbell } from "lucide-react";
 
 // --- FULL LOCALIZATION DICTIONARY ---
 const TRANSLATIONS: any = {
@@ -56,17 +56,11 @@ const cleanCitation = (raw: any) => {
   }
 };
 
+// Pure plain text format (no bold elements returned)
 const formatText = (text: string) => {
   let clean = text.replace(/\*\*\s*\n/g, ''); 
   clean = clean.replace(/—/g, '-'); 
-  
-  const parts = clean.split('**');
-  return parts.map((part, i) => {
-    if (i % 2 === 1 && part.trim().length > 0) {
-      return <strong key={i} className="block mt-5 mb-1 text-[16px] sm:text-[17px] font-extrabold tracking-wide text-[#86eae9] drop-shadow-sm">{part}</strong>;
-    }
-    return <span key={i}>{part.replace(/\*/g, '')}</span>;
-  });
+  return clean.replace(/\*\*/g, '').replace(/\*/g, '');
 };
 
 const TypewriterText = ({ text, onComplete, onTick }: { text: any, onComplete: () => void, onTick: () => void }) => {
@@ -95,7 +89,7 @@ const TypewriterText = ({ text, onComplete, onTick }: { text: any, onComplete: (
     return () => clearInterval(timer);
   }, [safeText, onComplete, onTick]);
 
-  return <>{safeText.slice(0, displayedLength)}</>;
+  return <span>{safeText.slice(0, displayedLength)}</span>;
 };
 
 export default function ChatPage() {
@@ -220,7 +214,22 @@ export default function ChatPage() {
           <button onClick={() => router.push("/")} className="p-2 rounded-full hover:bg-[#3231b1]/10 dark:hover:bg-white/10 transition-colors">
             <ArrowLeft className="w-5 h-5 text-[#212121] dark:text-[#f9f9f9]" />
           </button>
-          <img src="/logo.png" alt="Izana AI" className="h-6 md:h-7 object-contain dark:invert" />
+          
+          {/* LOGO FALLBACK LOGIC ADDED HERE */}
+          <div className="flex items-center gap-2">
+            <img 
+              src="/logo.png" 
+              alt="Izana AI" 
+              className="h-6 md:h-7 object-contain dark:invert" 
+              onError={(e) => {
+                e.currentTarget.style.display = 'none'; // Hides broken image icon
+                const fallback = e.currentTarget.nextElementSibling as HTMLElement;
+                if (fallback) fallback.style.display = 'block'; // Shows text instead
+              }}
+            />
+            <span className="hidden font-bold text-[#3231b1] dark:text-[#86eae9] text-lg tracking-tight">Izana AI</span>
+          </div>
+          
         </div>
         <select value={langCode} onChange={(e) => { setLangCode(e.target.value); localStorage.setItem("izana_language", e.target.value); }} className="bg-white dark:bg-[#3231b1] border border-black/10 dark:border-white/10 shadow-sm text-[#212121] dark:text-[#f9f9f9] text-xs py-1.5 px-3 rounded-full outline-none appearance-none font-medium">
           <option value="en">English</option><option value="es">Español</option><option value="ja">日本語</option><option value="zh">普通话</option><option value="hi">हिन्दी</option><option value="ta">தமிழ்</option><option value="te">తెలుగు</option><option value="ml">മലയാളം</option><option value="bn">বাংলা</option>
@@ -251,10 +260,23 @@ export default function ChatPage() {
             {messages.map((m) => (
               <motion.div initial={{opacity:0, y:10}} animate={{opacity:1, y:0}} key={m.id} className={`flex w-full ${m.type === 'user' ? 'justify-end' : 'justify-start gap-2 sm:gap-3'}`}>
                 
-                {/* BOT AVATAR LOGO */}
+                {/* BOT AVATAR LOGO WITH FALLBACK */}
                 {m.type === 'bot' && (
                   <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-white border border-black/10 dark:border-white/10 shadow-sm flex items-center justify-center shrink-0 mt-1 overflow-hidden p-1.5">
-                    <img src="/logo.png" alt="Izana AI" className="w-full h-full object-contain dark:invert" />
+                    <img 
+                      src="/logo.png" 
+                      alt="AI" 
+                      className="w-full h-full object-contain dark:invert" 
+                      onError={(e) => {
+                        e.currentTarget.style.display = 'none'; 
+                        const fallback = e.currentTarget.nextElementSibling as HTMLElement;
+                        if (fallback) fallback.style.display = 'flex'; 
+                      }}
+                    />
+                    {/* Fallback geometric shape if image breaks */}
+                    <div className="hidden w-full h-full bg-[#3231b1] rounded-full items-center justify-center">
+                      <span className="text-[10px] font-bold text-white">AI</span>
+                    </div>
                   </div>
                 )}
 
@@ -264,7 +286,7 @@ export default function ChatPage() {
                     {m.isAnimating ? (
                       <TypewriterText text={m.content} onComplete={() => markAnimationComplete(m.id)} onTick={scrollToBottomInstant} />
                     ) : (
-                      (typeof m.content === 'string' ? m.content : String(m.content)).replace(/\*\*/g, '').replace(/\*/g, '').replace(/—/g, '-')
+                      formatText(m.content)
                     )}
                   </div>
                   
@@ -338,7 +360,19 @@ export default function ChatPage() {
             {isLoading && (
                <motion.div initial={{opacity:0, y:10}} animate={{opacity:1, y:0}} className="flex justify-start gap-2 sm:gap-3 w-full">
                  <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-white border border-black/10 dark:border-white/10 shadow-sm flex items-center justify-center shrink-0 mt-1 overflow-hidden p-1.5">
-                    <img src="/logo.png" alt="Izana AI" className="w-full h-full object-contain dark:invert" />
+                    <img 
+                      src="/logo.png" 
+                      alt="AI" 
+                      className="w-full h-full object-contain dark:invert" 
+                      onError={(e) => {
+                        e.currentTarget.style.display = 'none'; 
+                        const fallback = e.currentTarget.nextElementSibling as HTMLElement;
+                        if (fallback) fallback.style.display = 'flex'; 
+                      }}
+                    />
+                    <div className="hidden w-full h-full bg-[#3231b1] rounded-full items-center justify-center">
+                      <span className="text-[10px] font-bold text-white">AI</span>
+                    </div>
                  </div>
                  <div className="bg-white dark:bg-[#3231b1]/20 border border-black/5 dark:border-white/10 rounded-3xl rounded-bl-sm px-5 py-4 flex items-center gap-3 shadow-[0_4px_20px_rgb(0,0,0,0.03)]">
                    <Loader2 className="w-5 h-5 animate-spin text-[#3231b1] dark:text-[#86eae9]" />
