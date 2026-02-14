@@ -26,7 +26,7 @@ try:
     groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
     cohere_key = os.getenv("COHERE_API_KEY", "8LT29K24AsAQZbJCYlvz4eHPTtN5duyZkQF1QtXw")
     cohere_client = cohere.Client(cohere_key) if cohere_key else None
-    print("✅ STARTUP SUCCESS: Generator-Evaluator AI Pipeline Ready")
+    print("✅ STARTUP SUCCESS: Fail-Safe AI Pipeline Ready")
 except Exception as e:
     print(f"❌ STARTUP FAILED: {str(e)}")
     pc, index, openai_client, groq_client, cohere_client = None, None, None, None, None
@@ -70,27 +70,43 @@ def save_log(filepath, entry):
     except Exception:
         pass
 
+def clean_citation(raw_source: str) -> str:
+    """Safely cleans citations for the frontend UI."""
+    try:
+        name = raw_source.split('/')[-1]
+        name = name.rsplit('.', 1)[0]
+        name = re.sub(r'(?i)_compress|-compress|_final_version|_\d_\d|nbsped|factsheet', '', name)
+        name = re.sub(r'\d{8,}', '', name) 
+        name = name.replace('_', ' ').replace('-', ' ')
+        return ' '.join(name.split()).title()
+    except:
+        return "Medical Reference Document"
+
 @router.post("/chat")
 async def chat_endpoint(request: ChatRequest, background_tasks: BackgroundTasks):
     if not groq_client: raise HTTPException(500, "AI tools not initialized")
     background_tasks.add_task(cleanup_logs)
 
     try:
-        # 1. MULTI-QUERY
-        mq_prompt = f"Generate 2 alternative search queries to maximize medical document retrieval for: '{request.message}'. Return ONLY the 2 queries separated by a newline."
-        mq_completion = groq_client.chat.completions.create(
-            messages=[{"role": "user", "content": mq_prompt}],
-            model="llama-3.1-8b-instant",
-            temperature=0.2
-        )
-        expanded_queries = [request.message] + [q.strip() for q in mq_completion.choices[0].message.content.split('\n') if q.strip()]
-        expanded_queries = expanded_queries[:3] 
+        # 1. MULTI-QUERY (With Fallback)
+        try:
+            mq_prompt = f"Generate 2 alternative search queries to maximize medical document retrieval for: '{request.message}'. Return ONLY the 2 queries separated by a newline."
+            mq_completion = groq_client.chat.completions.create(
+                messages=[{"role": "user", "content": mq_prompt}],
+                model="llama-3.1-8b-instant",
+                temperature=0.2
+            )
+            expanded_queries = [request.message] + [q.strip() for q in mq_completion.choices[0].message.content.split('\n') if q.strip()]
+            expanded_queries = expanded_queries[:3]
+        except Exception as e:
+            print("MQ Error:", e)
+            expanded_queries = [request.message] # Fallback to single query
 
         # 2. EMBEDDING
         emb_resp = openai_client.embeddings.create(input=expanded_queries, model="text-embedding-ada-002")
         vectors = [item.embedding for item in emb_resp.data]
 
-        # 3. SEMANTIC CACHE
+        # 3. CACHE CHECK
         cache_resp = index.query(namespace=CACHE_NAMESPACE, vector=vectors[0], top_k=1, include_metadata=True)
         if cache_resp.matches and cache_resp.matches[0].score > 0.95:
             cached_meta = cache_resp.matches[0].metadata
@@ -103,7 +119,7 @@ async def chat_endpoint(request: ChatRequest, background_tasks: BackgroundTasks)
                 "is_gap": False
             }
 
-        # 4. KNOWLEDGE RETRIEVAL
+        # 4. RETRIEVAL
         unique_docs = {}
         for vec in vectors:
             search_resp = index.query(vector=vec, top_k=4, include_metadata=True)
@@ -119,29 +135,41 @@ async def chat_endpoint(request: ChatRequest, background_tasks: BackgroundTasks)
 
         context_text, citations, highest_score = "", [], 0.0
 
-        # 5. RERANKING
-        if cohere_client and doc_texts:
-            rerank_resp = cohere_client.rerank(model="rerank-multilingual-v3.0", query=request.message, documents=doc_texts, top_n=4)
-            for r in rerank_resp.results:
-                if r.relevance_score > highest_score: highest_score = r.relevance_score
-                if r.relevance_score > 0.3:
-                    idx = r.index
-                    src = doc_sources[idx]
-                    context_text += f"Info from {src}: {doc_texts[idx]}\n\n"
+        # 5. RERANKING (With Fallback)
+        try:
+            if cohere_client and doc_texts:
+                rerank_resp = cohere_client.rerank(model="rerank-multilingual-v3.0", query=request.message, documents=doc_texts, top_n=4)
+                for r in rerank_resp.results:
+                    if r.relevance_score > highest_score: highest_score = r.relevance_score
+                    if r.relevance_score > 0.3:
+                        idx = r.index
+                        src = clean_citation(doc_sources[idx])
+                        context_text += f"Info from {src}: {doc_texts[idx]}\n\n"
+                        if src not in citations: citations.append(src)
+        except Exception as e:
+            print("Cohere Error:", e)
+            sorted_matches = sorted(unique_docs.values(), key=lambda x: x.score, reverse=True)
+            highest_score = sorted_matches[0].score if sorted_matches else 0.0
+            for match in sorted_matches[:4]:
+                if match.score > 0.75:
+                    src = clean_citation(match.metadata.get("source", "Medical Database"))
+                    context_text += f"Info from {src}: {match.metadata.get('text', '')}\n\n"
                     if src not in citations: citations.append(src)
 
         is_gap = highest_score < 0.3
         if is_gap:
             background_tasks.add_task(save_log, GAP_LOG_FILE, {"timestamp": datetime.now().isoformat(), "question": request.message, "score": float(highest_score), "type": "Gap"})
-            context_text += "Note: Medical database limited. Use general highly-accurate medical knowledge.\n"
-            citations.append("General Medical Knowledge")
+            context_text += "Note: Medical database limited. Use general medical knowledge.\n"
 
-        # 6. MEDICAL BRAIN (70B)
+        # 6. DRAFT (70B) - Now explicitly enforces the Clinical Tone
         draft_prompt = f"""
         Answer the following medical question based strictly on the CONTEXT. Language: {request.language}.
-        CRITICAL RULES:
-        1. Provide accurate, factual medical information from the context.
-        2. DO NOT mention cancer, oncology, or cancer-related fertility preservation UNLESS explicitly asked.
+        
+        CRITICAL TONE RULES:
+        1. NO FIRST-PERSON PRONOUNS. Do not use "we", "our", "us", or "I". Talk in the third person (e.g., "healthcare providers", "the clinic", "they").
+        2. NO EM-DASHES. Do not use —. Use commas or periods.
+        3. NO CANCER MENTIONS. Do not mention cancer, oncology, or fertility preservation for cancer patients unless explicitly asked. Assume they are healthy adults in a clinic.
+        
         CONTEXT: {context_text}
         """
         draft_completion = groq_client.chat.completions.create(
@@ -151,44 +179,42 @@ async def chat_endpoint(request: ChatRequest, background_tasks: BackgroundTasks)
         )
         draft_response = draft_completion.choices[0].message.content
 
-        # 7. QUALITY CONTROLLER (8B)
-        qc_prompt = f"""
-        You are a Quality Controller and an empathetic clinical companion. Language: {request.language}.
-        
-        TASK: Rewrite the draft response below to be simple, calming, and hopeful for couples currently in a fertility clinic.
-        
-        STRICT RULES:
-        1. DO NOT use first-person pronouns ("we", "I", "our"). Use third-person plural ("healthcare providers", "the clinic", "they").
-        2. DO NOT use em-dashes (—) or hyphens for pauses. Use commas or periods.
-        3. Break the response into short paragraphs. Use **Subheadings** to separate ideas.
-        4. NEVER mention cancer or oncology unless explicitly asked.
-        5. Generate EXACTLY 3 clickable leading questions.
-
-        DRAFT RESPONSE:
-        {draft_response}
-
-        OUTPUT FORMAT:
-        Return ONLY a JSON object:
-        {{
-            "revised_response": "The formatted response.",
-            "suggested_questions": ["Q1", "Q2", "Q3"]
-        }}
-        """
-        
-        qc_completion = groq_client.chat.completions.create(
-            messages=[{"role": "system", "content": qc_prompt}],
-            model="llama-3.1-8b-instant",
-            temperature=0.3,
-            response_format={"type": "json_object"}
-        )
-        
+        # 7. QC FORMATTER (8B) - With Strict Fallback
         try:
+            qc_prompt = f"""
+            You are a JSON formatting tool. Read the DRAFT RESPONSE below.
+            Language: {request.language}.
+
+            TASK:
+            1. Keep the exact tone of the draft. Do NOT add words like "we" or "our".
+            2. Remove any bullet points (* or •).
+            3. Break the text into short paragraphs using **Subheadings** to separate ideas. Do NOT put empty ** blocks.
+            4. Generate 3 clickable leading questions.
+            
+            DRAFT RESPONSE:
+            {draft_response}
+
+            OUTPUT FORMAT:
+            Return ONLY a JSON object:
+            {{
+                "revised_response": "The formatted response with subheadings.",
+                "suggested_questions": ["Q1", "Q2", "Q3"]
+            }}
+            """
+            qc_completion = groq_client.chat.completions.create(
+                messages=[{"role": "system", "content": qc_prompt}],
+                model="llama-3.1-8b-instant",
+                temperature=0.3,
+                response_format={"type": "json_object"}
+            )
             final_data = json.loads(qc_completion.choices[0].message.content)
             final_response = final_data.get("revised_response", draft_response)
             suggested_questions = final_data.get("suggested_questions", [])
-        except Exception:
+        except Exception as e:
+            print("QC Error:", e)
+            # Safe Fallback: Draft already has the correct tone from step 6!
             final_response = draft_response
-            suggested_questions = []
+            suggested_questions = ["What is the next step in the process?", "How long does this take?", "Are there any side effects?"]
 
         return {
             "response": final_response,
