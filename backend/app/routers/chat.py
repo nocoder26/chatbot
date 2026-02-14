@@ -24,16 +24,13 @@ try:
     index = pc.Index(os.getenv("PINECONE_INDEX_NAME"))
     openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
     groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-    
     cohere_key = os.getenv("COHERE_API_KEY", "8LT29K24AsAQZbJCYlvz4eHPTtN5duyZkQF1QtXw")
     cohere_client = cohere.Client(cohere_key) if cohere_key else None
-    
     print("✅ STARTUP SUCCESS: Generator-Evaluator AI Pipeline Ready")
 except Exception as e:
     print(f"❌ STARTUP FAILED: {str(e)}")
     pc, index, openai_client, groq_client, cohere_client = None, None, None, None, None
 
-# --- DATA MODELS ---
 class ChatRequest(BaseModel):
     message: str
     language: str = "English"
@@ -45,7 +42,6 @@ class FeedbackRequest(BaseModel):
     reason: str = ""
     suggested_questions: list = []
 
-# --- HELPER FUNCTIONS ---
 def cleanup_logs():
     try:
         cutoff = datetime.now() - timedelta(hours=24)
@@ -56,7 +52,7 @@ def cleanup_logs():
                 new_logs = [log for log in logs if datetime.fromisoformat(log["timestamp"]) > cutoff]
                 with open(filepath, "w") as f:
                     json.dump(new_logs, f, indent=2)
-    except Exception as e:
+    except Exception:
         pass
 
 def save_log(filepath, entry):
@@ -71,47 +67,30 @@ def save_log(filepath, entry):
         if len(logs) > 100: logs = logs[-100:]
         with open(filepath, "w") as f:
             json.dump(logs, f, indent=2)
-    except Exception as e:
+    except Exception:
         pass
-
-def clean_citation(raw_source: str) -> str:
-    """Optimized string cleaner for beautiful citations."""
-    name = raw_source.split('/')[-1]
-    name = name.rsplit('.', 1)[0]
-    name = re.sub(r'(?i)_compress|-compress|_final_version|_\d_\d|nbsped|factsheet', '', name)
-    name = re.sub(r'\d{8,}', '', name) 
-    name = name.replace('_', ' ').replace('-', ' ')
-    name = ' '.join(name.split())
-    return name.title()
-
-# --- ENDPOINTS ---
 
 @router.post("/chat")
 async def chat_endpoint(request: ChatRequest, background_tasks: BackgroundTasks):
     if not groq_client: raise HTTPException(500, "AI tools not initialized")
-    
     background_tasks.add_task(cleanup_logs)
 
     try:
-        # --- 1. SUPER-FAST MULTI-QUERY (Small Model) ---
+        # 1. MULTI-QUERY
         mq_prompt = f"Generate 2 alternative search queries to maximize medical document retrieval for: '{request.message}'. Return ONLY the 2 queries separated by a newline."
         mq_completion = groq_client.chat.completions.create(
             messages=[{"role": "user", "content": mq_prompt}],
             model="llama-3.1-8b-instant",
             temperature=0.2
         )
-        
         expanded_queries = [request.message] + [q.strip() for q in mq_completion.choices[0].message.content.split('\n') if q.strip()]
         expanded_queries = expanded_queries[:3] 
 
-        # --- 2. VECTOR EMBEDDING ---
-        emb_resp = openai_client.embeddings.create(
-            input=expanded_queries, 
-            model="text-embedding-ada-002"
-        )
+        # 2. EMBEDDING
+        emb_resp = openai_client.embeddings.create(input=expanded_queries, model="text-embedding-ada-002")
         vectors = [item.embedding for item in emb_resp.data]
 
-        # --- 3. CHECK SEMANTIC CACHE ---
+        # 3. SEMANTIC CACHE
         cache_resp = index.query(namespace=CACHE_NAMESPACE, vector=vectors[0], top_k=1, include_metadata=True)
         if cache_resp.matches and cache_resp.matches[0].score > 0.95:
             cached_meta = cache_resp.matches[0].metadata
@@ -124,7 +103,7 @@ async def chat_endpoint(request: ChatRequest, background_tasks: BackgroundTasks)
                 "is_gap": False
             }
 
-        # --- 4. KNOWLEDGE RETRIEVAL ---
+        # 4. KNOWLEDGE RETRIEVAL
         unique_docs = {}
         for vec in vectors:
             search_resp = index.query(vector=vec, top_k=4, include_metadata=True)
@@ -140,18 +119,16 @@ async def chat_endpoint(request: ChatRequest, background_tasks: BackgroundTasks)
 
         context_text, citations, highest_score = "", [], 0.0
 
-        # --- 5. HIGH-ACCURACY RERANKING ---
+        # 5. RERANKING
         if cohere_client and doc_texts:
-            rerank_resp = cohere_client.rerank(
-                model="rerank-multilingual-v3.0", query=request.message, documents=doc_texts, top_n=4
-            )
+            rerank_resp = cohere_client.rerank(model="rerank-multilingual-v3.0", query=request.message, documents=doc_texts, top_n=4)
             for r in rerank_resp.results:
                 if r.relevance_score > highest_score: highest_score = r.relevance_score
                 if r.relevance_score > 0.3:
                     idx = r.index
-                    clean_src = clean_citation(doc_sources[idx])
-                    context_text += f"Info from {clean_src}: {doc_texts[idx]}\n\n"
-                    if clean_src not in citations: citations.append(clean_src)
+                    src = doc_sources[idx]
+                    context_text += f"Info from {src}: {doc_texts[idx]}\n\n"
+                    if src not in citations: citations.append(src)
 
         is_gap = highest_score < 0.3
         if is_gap:
@@ -159,50 +136,48 @@ async def chat_endpoint(request: ChatRequest, background_tasks: BackgroundTasks)
             context_text += "Note: Medical database limited. Use general highly-accurate medical knowledge.\n"
             citations.append("General Medical Knowledge")
 
-        # --- 6. THE MEDICAL BRAIN (Big Model: 70b) ---
-        # Focuses purely on extracting accurate medical facts from the context.
+        # 6. MEDICAL BRAIN (70B)
         draft_prompt = f"""
         Answer the following medical question based strictly on the CONTEXT. Language: {request.language}.
         CRITICAL RULES:
         1. Provide accurate, factual medical information from the context.
-        2. DO NOT mention cancer, oncology, or cancer-related fertility preservation UNLESS the user explicitly asks about it.
-        
+        2. DO NOT mention cancer, oncology, or cancer-related fertility preservation UNLESS explicitly asked.
         CONTEXT: {context_text}
         """
         draft_completion = groq_client.chat.completions.create(
             messages=[{"role": "system", "content": draft_prompt}, {"role": "user", "content": request.message}],
             model="llama-3.3-70b-versatile",
-            temperature=0.1 # Very low temperature for maximum factual accuracy
+            temperature=0.1
         )
         draft_response = draft_completion.choices[0].message.content
 
-        # --- 7. THE QUALITY CONTROLLER (Small Model: 8b-instant) ---
-        # Runs a lightning-fast pass to format, inject empathy, apply clinic constraints, and generate JSON.
+        # 7. QUALITY CONTROLLER (8B)
         qc_prompt = f"""
-        You are a Quality Controller and an empathetic fertility caregiver.
-        Language: {request.language}.
-
-        TASK:
-        1. Read the medical draft response below.
-        2. Rewrite it to be incredibly easy to understand using simple, calming, hopeful language. Explain any abbreviations.
-        3. FORMATTING: Break the response into short paragraphs. Use **Subheadings** (surrounded by double asterisks) to separate distinct ideas and make it highly scannable. 
-        4. CRITICAL: Ensure NO mention of cancer or oncology exists in the text (unless it was explicitly in the draft). Speak to them as healthy adults already in a fertility clinic.
-        5. Generate EXACTLY 3 clickable leading questions the user might want to ask next.
+        You are a Quality Controller and an empathetic clinical companion. Language: {request.language}.
+        
+        TASK: Rewrite the draft response below to be simple, calming, and hopeful for couples currently in a fertility clinic.
+        
+        STRICT RULES:
+        1. DO NOT use first-person pronouns ("we", "I", "our"). Use third-person plural ("healthcare providers", "the clinic", "they").
+        2. DO NOT use em-dashes (—) or hyphens for pauses. Use commas or periods.
+        3. Break the response into short paragraphs. Use **Subheadings** to separate ideas.
+        4. NEVER mention cancer or oncology unless explicitly asked.
+        5. Generate EXACTLY 3 clickable leading questions.
 
         DRAFT RESPONSE:
         {draft_response}
 
         OUTPUT FORMAT:
-        You MUST return ONLY a valid JSON object with this exact schema:
+        Return ONLY a JSON object:
         {{
-            "revised_response": "The formatted, empathetic response with **Subheadings** and distinct paragraphs.",
-            "suggested_questions": ["Question 1", "Question 2", "Question 3"]
+            "revised_response": "The formatted response.",
+            "suggested_questions": ["Q1", "Q2", "Q3"]
         }}
         """
         
         qc_completion = groq_client.chat.completions.create(
             messages=[{"role": "system", "content": qc_prompt}],
-            model="llama-3.1-8b-instant", # Ultra-fast small model
+            model="llama-3.1-8b-instant",
             temperature=0.3,
             response_format={"type": "json_object"}
         )
@@ -241,20 +216,11 @@ async def submit_feedback(feedback: FeedbackRequest, background_tasks: Backgroun
             emb_resp = openai_client.embeddings.create(input=feedback.question, model="text-embedding-ada-002")
             vector = emb_resp.data[0].embedding
             index.upsert(
-                vectors=[{
-                    "id": str(uuid.uuid4()),
-                    "values": vector,
-                    "metadata": {
-                        "question": feedback.question, 
-                        "response": feedback.answer,
-                        "suggested_questions": json.dumps(feedback.suggested_questions)
-                    }
-                }],
+                vectors=[{"id": str(uuid.uuid4()), "values": vector, "metadata": {"question": feedback.question, "response": feedback.answer, "suggested_questions": json.dumps(feedback.suggested_questions)}}],
                 namespace=CACHE_NAMESPACE
             )
-        except Exception as e:
+        except Exception:
             pass
-    
     return {"status": "Recorded"}
 
 @router.get("/admin/stats")
