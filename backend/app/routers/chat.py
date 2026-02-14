@@ -167,13 +167,16 @@ async def chat_endpoint(request: ChatRequest, background_tasks: BackgroundTasks)
         2. NO EM-DASHES. Do not use —.
         3. PLAIN TEXT ONLY. DO NOT use markdown, bold, or asterisks.
         4. NO CANCER MENTIONS unless explicitly asked.
+        5. CONCISE: Be direct. Do not loop or repeat yourself.
         
         CONTEXT: {context_text}
         """
         draft_completion = groq_client.chat.completions.create(
             messages=[{"role": "system", "content": draft_prompt}, {"role": "user", "content": request.message}],
             model="llama-3.3-70b-versatile",
-            temperature=0.1
+            temperature=0.2,
+            max_tokens=600, # Prevents runaway generation
+            frequency_penalty=0.4 # PREVENTS REPETITION LOOPS
         )
         draft_response = draft_completion.choices[0].message.content
 
@@ -188,6 +191,7 @@ async def chat_endpoint(request: ChatRequest, background_tasks: BackgroundTasks)
             2. Remove any bullet points, asterisks (*), bold marks (**), or em-dashes (—). Plain text ONLY.
             3. Break the text into short, easy-to-read paragraphs separated by double blank lines.
             4. Generate 3 clickable leading questions.
+            5. CRITICAL: DO NOT repeat any sentences. Stop generating when the thought is complete.
             
             DRAFT RESPONSE:
             {draft_response}
@@ -195,7 +199,7 @@ async def chat_endpoint(request: ChatRequest, background_tasks: BackgroundTasks)
             OUTPUT FORMAT:
             Return ONLY a JSON object:
             {{
-                "revised_response": "The plain text response here.",
+                "revised_response": "The plain text response here. A SINGLE STRING.",
                 "suggested_questions": ["Q1", "Q2", "Q3"]
             }}
             """
@@ -203,11 +207,13 @@ async def chat_endpoint(request: ChatRequest, background_tasks: BackgroundTasks)
                 messages=[{"role": "system", "content": qc_prompt}],
                 model="llama-3.1-8b-instant",
                 temperature=0.3,
+                max_tokens=600,
+                frequency_penalty=0.6, # STRICTLY PREVENTS REPETITION LOOPS
+                presence_penalty=0.2,
                 response_format={"type": "json_object"}
             )
             final_data = json.loads(qc_completion.choices[0].message.content)
             
-            # --- AGGRESSIVE OBJECT/LIST FLATTENER ---
             raw_response = final_data.get("revised_response", draft_response)
             if isinstance(raw_response, list):
                 final_response = "\n\n".join([str(p) for p in raw_response])
@@ -216,7 +222,6 @@ async def chat_endpoint(request: ChatRequest, background_tasks: BackgroundTasks)
             else:
                 final_response = str(raw_response)
                 
-            # Final cleaning of stray markdown
             final_response = final_response.replace("**", "").replace("*", "").replace("—", "-")
                 
             suggested_questions = final_data.get("suggested_questions", [])
