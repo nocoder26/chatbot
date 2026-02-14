@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
-import { Send, ArrowLeft, Loader2, Sparkles, BookOpen, Heart, Activity, CheckCircle2, ChevronRight, Moon } from "lucide-react";
+import { Send, ArrowLeft, Loader2, Sparkles, BookOpen, Heart, Activity, Coins, CheckCircle2, ChevronRight, Moon } from "lucide-react";
 
 // --- FULL LOCALIZATION DICTIONARY ---
 const TRANSLATIONS: any = {
@@ -24,7 +24,6 @@ const TRANSLATIONS: any = {
   }
 };
 
-// Map pre-loaded topics to translation keys
 const TOPIC_ICONS = [
   { icon: <Activity className="w-5 h-5" />, labelKey: "t_ivf", queryKey: "t_ivf_q" },
   { icon: <Heart className="w-5 h-5" />, labelKey: "t_male", queryKey: "t_male_q" },
@@ -36,26 +35,18 @@ const TOPIC_ICONS = [
 
 const LOADING_STEPS = ["Understanding your needs...", "Reading medical knowledge...", "Writing a caring response...", "Almost there..."];
 
-// --- ADVANCED FORMATTERS ---
-// Strips ugly file paths perfectly
-const cleanCitation = (raw: string) => {
-  let cleaned = raw.replace(/\\/g, '/').split('/').pop() || raw;
-  cleaned = cleaned.replace(/\.pdf$/i, '');
-  cleaned = cleaned.replace(/(_compress|-compress|_final_version|_\d_\d|nbsped|factsheet)/gi, '');
-  cleaned = cleaned.replace(/\d{8,}/g, '');
-  cleaned = cleaned.replace(/[-_]/g, ' ');
-  return cleaned.trim().replace(/\b\w/g, c => c.toUpperCase());
-};
-
-// Strips asterisks safely and creates bold tags instantly during the typewriter stream
+// Removes bullets, stray asterisks, and renders safe bold HTML blocks
 const formatText = (text: string) => {
-  const cleaned = text.replace(/—/g, '-').replace(/(?<!\*)\*(?!\*)/g, '•'); 
-  const parts = cleaned.split('**');
+  let clean = text.replace(/\*\*\s*\n/g, ''); // Removes blank bold blocks
+  clean = clean.replace(/—/g, '-'); // Fallback remove em-dashes
+  
+  const parts = clean.split('**');
   return parts.map((part, i) => {
-    if (i % 2 === 1) {
-      return <strong key={i} className="block mt-5 mb-1 text-[16px] sm:text-[17px] font-extrabold tracking-wide text-teal-950 dark:text-teal-100 drop-shadow-sm">{part}</strong>;
+    if (i % 2 === 1 && part.trim().length > 0) {
+      return <strong key={i} className="block mt-5 mb-1 text-[16px] sm:text-[17px] font-extrabold tracking-wide text-teal-50 drop-shadow-sm">{part}</strong>;
     }
-    return <span key={i}>{part}</span>;
+    // Remove individual bullets (*) to keep clean paragraphs
+    return <span key={i}>{part.replace(/\*/g, '')}</span>;
   });
 };
 
@@ -65,8 +56,11 @@ const TypewriterText = ({ text, onComplete, onTick }: { text: string, onComplete
   
   useEffect(() => {
     let currentLen = 0;
+    // Dynamic Speed: Short answers type slower, long answers type faster (keeps animation ~1.5s total)
+    const stepSize = Math.max(1, Math.floor(text.length / 100)); 
+    
     const timer = setInterval(() => {
-      currentLen += 3; // Fast, fluid typing speed
+      currentLen += stepSize; 
       setDisplayedLength(currentLen);
       onTick();
       if (currentLen >= text.length) {
@@ -91,7 +85,6 @@ export default function ChatPage() {
   const [timeOfDay, setTimeOfDay] = useState<"morning" | "afternoon" | "evening">("morning");
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  // Fallback to English if translation is missing
   const t = TRANSLATIONS[langCode] || TRANSLATIONS["en"];
 
   useEffect(() => {
@@ -118,7 +111,6 @@ export default function ChatPage() {
     if (isLoading || messages.length > 0) scrollToBottomSmooth();
   }, [isLoading, messages.length]);
 
-  // NEW: handleSend now accepts an "isHiddenQuery" flag for pre-loaded buttons
   const handleSend = async (text = input, isHiddenQuery = false) => {
     if (!text.trim() || isLoading) return;
     
@@ -140,7 +132,7 @@ export default function ChatPage() {
         id: Date.now() + 1, 
         type: "bot", 
         content: data.response, 
-        citations: data.citations.map((c: string) => cleanCitation(c)), // Cleaned instantly
+        citations: data.citations, 
         suggested_questions: data.suggested_questions || [],
         questionOriginal: text, 
         rating: 0, 
@@ -206,7 +198,7 @@ export default function ChatPage() {
               {TOPIC_ICONS.map((topic, i) => (
                 <button key={i} onClick={() => handleSend(t[topic.queryKey], true)} className="flex flex-col items-center gap-3 p-4 bg-white dark:bg-slate-800 rounded-3xl shadow-[0_8px_30px_rgb(0,0,0,0.04)] hover:shadow-[0_8px_30px_rgb(0,0,0,0.08)] active:scale-95 transition-all border border-slate-100 dark:border-slate-700 group">
                   <div className="p-3 bg-teal-50 dark:bg-teal-900/30 text-teal-600 dark:text-teal-400 rounded-full group-hover:bg-teal-600 group-hover:text-white transition-colors">{topic.icon}</div>
-                  <span className="text-sm font-medium text-slate-700 dark:text-slate-300 text-center">{t[topic.labelKey]}</span>
+                  <span className="text-[13px] font-medium text-slate-700 dark:text-slate-300 text-center leading-tight">{t[topic.labelKey]}</span>
                 </button>
               ))}
             </div>
