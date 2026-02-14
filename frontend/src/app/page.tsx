@@ -2,7 +2,6 @@
 
 import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
-import { Globe } from "lucide-react";
 
 // The supported languages
 const LANGUAGES = [
@@ -26,36 +25,69 @@ export default function LanguageSelection() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-teal-50 to-slate-100 dark:from-slate-900 dark:to-slate-800 flex flex-col items-center justify-center p-4">
+    // Applied the exact Brand Off-White background (#f9f9f9)
+    <div className="min-h-screen bg-[#f9f9f9] dark:bg-[#212121] flex flex-col items-center justify-center p-6 antialiased">
       <motion.div 
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
-        className="text-center mb-10"
+        transition={{ duration: 0.6, ease: "easeOut" }}
+        className="text-center mb-10 max-w-2xl mx-auto flex flex-col items-center"
       >
-        <div className="bg-white dark:bg-slate-800 p-4 rounded-full shadow-lg inline-block mb-4">
-          <Globe className="w-12 h-12 text-teal-600" />
+        {/* BRAND LOGO INJECTION */}
+        <img 
+          src="/logo.png" 
+          alt="Izana AI" 
+          className="h-20 md:h-28 object-contain mb-8 dark:invert" 
+        />
+        
+        {/* THE GOLDEN CIRCLE VALUE PROPOSITION */}
+        <div className="bg-white dark:bg-[#3231b1]/10 p-6 rounded-3xl border border-[#86eae9]/30 dark:border-[#3231b1]/30 shadow-[0_4px_20px_rgb(0,0,0,0.02)] mb-8">
+          <p className="text-[15px] md:text-base text-[#212121] dark:text-[#f9f9f9] leading-relaxed font-medium">
+            We believe every couple deserves to feel supported and confident on their path to parenthood. 
+            By acting as your safe, anonymous companion, Izana helps you navigate complex fertility treatments 
+            with clarity—empowering you to make informed decisions and achieve the highest possible success rates.
+          </p>
         </div>
-        <h1 className="text-4xl font-bold text-slate-800 dark:text-white mb-2">Welcome to Izana AI</h1>
-        <p className="text-slate-500 dark:text-slate-400">Please select your preferred language</p>
+
+        <p className="text-sm font-bold text-[#3231b1] dark:text-[#86eae9] uppercase tracking-widest mb-2">
+          Select your language
+        </p>
       </motion.div>
 
-      <div className="grid grid-cols-2 md:grid-cols-3 gap-4 max-w-2xl w-full">
-        {LANGUAGES.map((lang) => (
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-3 md:gap-4 max-w-2xl w-full">
+        {LANGUAGES.map((lang, i) => (
           <motion.button
             key={lang.code}
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: i * 0.05 }}
+            whileHover={{ scale: 1.03 }}
+            whileTap={{ scale: 0.97 }}
             onClick={() => handleSelect(lang.code)}
-            className="bg-white dark:bg-slate-800 p-6 rounded-2xl shadow-sm hover:shadow-xl border border-slate-100 dark:border-slate-700 transition-all flex flex-col items-center gap-2 group"
+            className="bg-white dark:bg-[#212121] p-5 rounded-3xl shadow-[0_8px_30px_rgb(0,0,0,0.04)] hover:shadow-[0_8px_30px_rgb(255,122,85,0.15)] border border-[#f9f9f9] dark:border-[#3231b1]/30 transition-all flex flex-col items-center gap-2 group"
           >
-            <span className="text-4xl mb-2 grayscale group-hover:grayscale-0 transition-all">{lang.flag}</span>
-            <span className="font-semibold text-slate-700 dark:text-slate-200 group-hover:text-teal-600">{lang.label}</span>
-            <span className="text-xs text-slate-400">{lang.name}</span>
+            <span className="text-3xl mb-1 grayscale opacity-80 group-hover:grayscale-0 group-hover:opacity-100 transition-all duration-300">
+              {lang.flag}
+            </span>
+            {/* Hover text uses the Brand Indigo (#3231b1) */}
+            <span className="font-semibold text-[15px] text-[#212121] dark:text-[#f9f9f9] group-hover:text-[#3231b1] dark:group-hover:text-[#86eae9] transition-colors">
+              {lang.label}
+            </span>
+            <span className="text-[11px] text-[#212121]/50 dark:text-[#f9f9f9]/50 font-medium">
+              {lang.name}
+            </span>
           </motion.button>
         ))}
       </div>
       
-      <p className="mt-12 text-xs text-slate-400">© 2026 Izana AI. Secure & Private.</p>
+      <motion.p 
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ delay: 0.8 }}
+        className="mt-12 text-[10px] text-[#212121]/40 dark:text-[#f9f9f9]/40 uppercase tracking-widest font-semibold"
+      >
+        © 2026 Izana AI • Secure & Private
+      </motion.p>
     </div>
   );
 }
