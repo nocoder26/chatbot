@@ -71,7 +71,6 @@ def save_log(filepath, entry):
         pass
 
 def clean_citation(raw_source: str) -> str:
-    """Safely cleans citations for the frontend UI."""
     try:
         name = raw_source.split('/')[-1]
         name = name.rsplit('.', 1)[0]
@@ -88,7 +87,7 @@ async def chat_endpoint(request: ChatRequest, background_tasks: BackgroundTasks)
     background_tasks.add_task(cleanup_logs)
 
     try:
-        # 1. MULTI-QUERY (With Fallback)
+        # 1. MULTI-QUERY
         try:
             mq_prompt = f"Generate 2 alternative search queries to maximize medical document retrieval for: '{request.message}'. Return ONLY the 2 queries separated by a newline."
             mq_completion = groq_client.chat.completions.create(
@@ -98,9 +97,8 @@ async def chat_endpoint(request: ChatRequest, background_tasks: BackgroundTasks)
             )
             expanded_queries = [request.message] + [q.strip() for q in mq_completion.choices[0].message.content.split('\n') if q.strip()]
             expanded_queries = expanded_queries[:3]
-        except Exception as e:
-            print("MQ Error:", e)
-            expanded_queries = [request.message] # Fallback to single query
+        except Exception:
+            expanded_queries = [request.message] 
 
         # 2. EMBEDDING
         emb_resp = openai_client.embeddings.create(input=expanded_queries, model="text-embedding-ada-002")
@@ -135,7 +133,7 @@ async def chat_endpoint(request: ChatRequest, background_tasks: BackgroundTasks)
 
         context_text, citations, highest_score = "", [], 0.0
 
-        # 5. RERANKING (With Fallback)
+        # 5. RERANKING
         try:
             if cohere_client and doc_texts:
                 rerank_resp = cohere_client.rerank(model="rerank-multilingual-v3.0", query=request.message, documents=doc_texts, top_n=4)
@@ -146,8 +144,7 @@ async def chat_endpoint(request: ChatRequest, background_tasks: BackgroundTasks)
                         src = clean_citation(doc_sources[idx])
                         context_text += f"Info from {src}: {doc_texts[idx]}\n\n"
                         if src not in citations: citations.append(src)
-        except Exception as e:
-            print("Cohere Error:", e)
+        except Exception:
             sorted_matches = sorted(unique_docs.values(), key=lambda x: x.score, reverse=True)
             highest_score = sorted_matches[0].score if sorted_matches else 0.0
             for match in sorted_matches[:4]:
@@ -161,14 +158,15 @@ async def chat_endpoint(request: ChatRequest, background_tasks: BackgroundTasks)
             background_tasks.add_task(save_log, GAP_LOG_FILE, {"timestamp": datetime.now().isoformat(), "question": request.message, "score": float(highest_score), "type": "Gap"})
             context_text += "Note: Medical database limited. Use general medical knowledge.\n"
 
-        # 6. DRAFT (70B) - Now explicitly enforces the Clinical Tone
+        # 6. DRAFT (70B) 
         draft_prompt = f"""
         Answer the following medical question based strictly on the CONTEXT. Language: {request.language}.
         
-        CRITICAL TONE RULES:
-        1. NO FIRST-PERSON PRONOUNS. Do not use "we", "our", "us", or "I". Talk in the third person (e.g., "healthcare providers", "the clinic", "they").
-        2. NO EM-DASHES. Do not use —. Use commas or periods.
-        3. NO CANCER MENTIONS. Do not mention cancer, oncology, or fertility preservation for cancer patients unless explicitly asked. Assume they are healthy adults in a clinic.
+        CRITICAL RULES:
+        1. NO FIRST-PERSON PRONOUNS. Do not use "we", "our", "us", or "I". Talk in the third person plural (e.g., "healthcare providers", "clinics", "they").
+        2. NO EM-DASHES. Do not use —.
+        3. PLAIN TEXT ONLY. DO NOT use markdown, bold, or asterisks.
+        4. NO CANCER MENTIONS unless explicitly asked.
         
         CONTEXT: {context_text}
         """
@@ -179,16 +177,16 @@ async def chat_endpoint(request: ChatRequest, background_tasks: BackgroundTasks)
         )
         draft_response = draft_completion.choices[0].message.content
 
-        # 7. QC FORMATTER (8B) - With Strict Fallback
+        # 7. QC FORMATTER (8B) 
         try:
             qc_prompt = f"""
             You are a JSON formatting tool. Read the DRAFT RESPONSE below.
             Language: {request.language}.
 
             TASK:
-            1. Keep the exact tone of the draft. Do NOT add words like "we" or "our".
-            2. Remove any bullet points (* or •).
-            3. Break the text into short paragraphs using **Subheadings** to separate ideas. Do NOT put empty ** blocks.
+            1. Keep the exact tone of the draft. STRICTLY use third-person ("healthcare providers", "they").
+            2. Remove any bullet points, asterisks (*), bold marks (**), or em-dashes (—). Plain text ONLY.
+            3. Break the text into short, easy-to-read paragraphs separated by double blank lines.
             4. Generate 3 clickable leading questions.
             
             DRAFT RESPONSE:
@@ -197,7 +195,7 @@ async def chat_endpoint(request: ChatRequest, background_tasks: BackgroundTasks)
             OUTPUT FORMAT:
             Return ONLY a JSON object:
             {{
-                "revised_response": "The formatted response with subheadings.",
+                "revised_response": "The plain text response here.",
                 "suggested_questions": ["Q1", "Q2", "Q3"]
             }}
             """
@@ -208,13 +206,26 @@ async def chat_endpoint(request: ChatRequest, background_tasks: BackgroundTasks)
                 response_format={"type": "json_object"}
             )
             final_data = json.loads(qc_completion.choices[0].message.content)
-            final_response = final_data.get("revised_response", draft_response)
+            
+            # --- AGGRESSIVE OBJECT/LIST FLATTENER ---
+            raw_response = final_data.get("revised_response", draft_response)
+            if isinstance(raw_response, list):
+                final_response = "\n\n".join([str(p) for p in raw_response])
+            elif isinstance(raw_response, dict):
+                final_response = "\n\n".join([str(v) for v in raw_response.values()])
+            else:
+                final_response = str(raw_response)
+                
+            # Final cleaning of stray markdown
+            final_response = final_response.replace("**", "").replace("*", "").replace("—", "-")
+                
             suggested_questions = final_data.get("suggested_questions", [])
+            if not isinstance(suggested_questions, list):
+                suggested_questions = []
+
         except Exception as e:
-            print("QC Error:", e)
-            # Safe Fallback: Draft already has the correct tone from step 6!
-            final_response = draft_response
-            suggested_questions = ["What is the next step in the process?", "How long does this take?", "Are there any side effects?"]
+            final_response = str(draft_response).replace("**", "").replace("*", "")
+            suggested_questions = ["What are the next steps?", "How long does the process take?", "Are there any side effects?"]
 
         return {
             "response": final_response,
