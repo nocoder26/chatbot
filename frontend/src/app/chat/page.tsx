@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
-import { Send, ArrowLeft, Loader2, Sparkles, BookOpen, Heart, Activity, CheckCircle2, ChevronRight, Moon } from "lucide-react";
+import { Send, ArrowLeft, Loader2, Sparkles, BookOpen, Heart, Activity, CheckCircle2, ChevronRight, Dumbbell } from "lucide-react";
 
 // --- FULL LOCALIZATION DICTIONARY ---
 const TRANSLATIONS: any = {
@@ -17,7 +17,7 @@ const TRANSLATIONS: any = {
     t_male: "Male Fertility", t_male_q: "How do men contribute to infertility and what can men do?",
     t_iui: "IUI", t_iui_q: "What is IUI?",
     t_nutrition: "Nutrition & Fertility", t_nutrition_q: "How important is what you eat to fertility treatment success?",
-    t_sleep: "Sleep & Fertility", t_sleep_q: "How does sleep affect fertility treatment success?",
+    t_exercise: "Exercise & Fertility", t_exercise_q: "What exercise can improve fertility treatment success rate for men and women?",
     t_success: "Improving Success", t_success_q: "What are 10 things you can do right now to improve fertility treatment success rates?",
     r1: "Inaccurate", r2: "Vague", r3: "Tone", r4: "Other",
     suggested: "Continue exploring:"
@@ -37,7 +37,7 @@ const TOPIC_ICONS = [
   { icon: <Heart className="w-5 h-5" />, labelKey: "t_male", queryKey: "t_male_q" },
   { icon: <Sparkles className="w-5 h-5" />, labelKey: "t_iui", queryKey: "t_iui_q" },
   { icon: <BookOpen className="w-5 h-5" />, labelKey: "t_nutrition", queryKey: "t_nutrition_q" },
-  { icon: <Moon className="w-5 h-5" />, labelKey: "t_sleep", queryKey: "t_sleep_q" },
+  { icon: <Dumbbell className="w-5 h-5" />, labelKey: "t_exercise", queryKey: "t_exercise_q" }, // Swapped to Exercise!
   { icon: <CheckCircle2 className="w-5 h-5" />, labelKey: "t_success", queryKey: "t_success_q" },
 ];
 
@@ -58,21 +58,18 @@ const cleanCitation = (raw: any) => {
 
 // --- SLOWER, SAFE TYPEWRITER COMPONENT ---
 const TypewriterText = ({ text, onComplete, onTick }: { text: any, onComplete: () => void, onTick: () => void }) => {
-  // Ultra-safe parser to prevent crash
   let safeText = "";
   if (typeof text === 'string') safeText = text;
   else if (Array.isArray(text)) safeText = text.join('\n\n');
   else if (typeof text === 'object' && text !== null) safeText = Object.values(text).join('\n\n');
   else safeText = String(text || "");
 
-  // Wipe out any markdown that managed to slip through
   safeText = safeText.replace(/\*\*/g, '').replace(/\*/g, '').replace(/—/g, '-'); 
 
   const [displayedLength, setDisplayedLength] = useState(0);
   
   useEffect(() => {
     let currentLen = 0;
-    // Slower, natural reading speed
     const timer = setInterval(() => {
       currentLen += 1; 
       setDisplayedLength(currentLen);
@@ -123,7 +120,17 @@ export default function ChatPage() {
   }, [isLoading]);
 
   const scrollToBottomSmooth = () => messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  const scrollToBottomInstant = useCallback(() => messagesEndRef.current?.scrollIntoView({ behavior: "auto", block: "end" }), []);
+  
+  // SMART SCROLL: Only forces scroll down if the user is already near the bottom!
+  const scrollToBottomInstant = useCallback(() => {
+    const container = document.getElementById("chat-scroll-container");
+    if (container && messagesEndRef.current) {
+      const isNearBottom = container.scrollHeight - container.scrollTop <= container.clientHeight + 150;
+      if (isNearBottom) {
+        messagesEndRef.current.scrollIntoView({ behavior: "auto", block: "end" });
+      }
+    }
+  }, []);
 
   useEffect(() => {
     if (isLoading || messages.length > 0) scrollToBottomSmooth();
@@ -209,8 +216,8 @@ export default function ChatPage() {
         </select>
       </header>
 
-      {/* Main Chat Area */}
-      <div className="flex-1 overflow-y-auto p-4 relative chat-container pb-10">
+      {/* Main Chat Area - Added id="chat-scroll-container" to power the Smart Scroll */}
+      <div id="chat-scroll-container" className="flex-1 overflow-y-auto p-4 relative chat-container pb-10">
         
         {messages.length === 0 && !isLoading ? (
           <div className="h-full flex flex-col items-center justify-center -mt-4">
