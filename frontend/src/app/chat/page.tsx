@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
-import { Send, ArrowLeft, Loader2, Sparkles, BookOpen, Heart, Activity, Coins, CheckCircle2, ChevronRight, Moon } from "lucide-react";
+import { Send, ArrowLeft, Loader2, Sparkles, BookOpen, Heart, Activity, CheckCircle2, ChevronRight, Moon } from "lucide-react";
 
 // --- FULL LOCALIZATION DICTIONARY ---
 const TRANSLATIONS: any = {
@@ -21,7 +21,9 @@ const TRANSLATIONS: any = {
     t_success: "Improving Success", t_success_q: "What are 10 things you can do right now to improve fertility treatment success rates?",
     r1: "Inaccurate", r2: "Vague", r3: "Tone", r4: "Other",
     suggested: "Suggested for you:"
-  }
+  },
+  es: { morning: "Buenos Días", afternoon: "Buenas Tardes", evening: "Buenas Noches", topics: "Temas para preguntar", placeholder: "Escribe tu pregunta...", disclaimer: "Izana AI no proporciona diagnósticos médicos.", rate: "Califica esta respuesta", feedback_prompt: "¿Qué faltó?", feedback_thanks: "¡Gracias!", shadow: "Prueba: \"¿Qué cambios mejoran la FIV?\"", suggested: "Sugerido:" },
+  ja: { morning: "おはようございます", afternoon: "こんにちは", evening: "こんばんは", topics: "トピック", placeholder: "質問を入力...", disclaimer: "Izana AIは診断を提供しません。", rate: "評価する", feedback_prompt: "何が不足していましたか？", feedback_thanks: "ありがとうございます！", shadow: "例：「IVFの成功率を上げるには？」", suggested: "提案:" }
 };
 
 const TOPIC_ICONS = [
@@ -35,44 +37,61 @@ const TOPIC_ICONS = [
 
 const LOADING_STEPS = ["Understanding your needs...", "Reading medical knowledge...", "Writing a caring response...", "Almost there..."];
 
-// Removes bullets, stray asterisks, and renders safe bold HTML blocks
-const formatText = (text: string) => {
-  let clean = text.replace(/\*\*\s*\n/g, ''); // Removes blank bold blocks
-  clean = clean.replace(/—/g, '-'); // Fallback remove em-dashes
+// --- BULLETPROOF FORMATTERS ---
+const cleanCitation = (raw: any) => {
+  try {
+    let cleaned = String(raw || "").replace(/\\/g, '/').split('/').pop() || String(raw);
+    cleaned = cleaned.replace(/\.pdf$/i, '');
+    cleaned = cleaned.replace(/(_compress|-compress|_final_version|_\d_\d|nbsped|factsheet)/gi, '');
+    cleaned = cleaned.replace(/\d{8,}/g, '');
+    cleaned = cleaned.replace(/[-_]/g, ' ');
+    return cleaned.trim().replace(/\b\w/g, c => c.toUpperCase());
+  } catch {
+    return "Medical Document";
+  }
+};
+
+const formatText = (rawText: any) => {
+  // Guaranteed fallback string conversion
+  const text = typeof rawText === 'string' ? rawText : String(rawText || "");
+  let clean = text.replace(/\*\*\s*\n/g, ''); 
+  clean = clean.replace(/—/g, '-'); 
   
   const parts = clean.split('**');
   return parts.map((part, i) => {
     if (i % 2 === 1 && part.trim().length > 0) {
-      return <strong key={i} className="block mt-5 mb-1 text-[16px] sm:text-[17px] font-extrabold tracking-wide text-teal-50 drop-shadow-sm">{part}</strong>;
+      return <strong key={i} className="block mt-5 mb-1 text-[16px] sm:text-[17px] font-extrabold tracking-wide text-teal-950 dark:text-teal-100 drop-shadow-sm">{part}</strong>;
     }
-    // Remove individual bullets (*) to keep clean paragraphs
     return <span key={i}>{part.replace(/\*/g, '')}</span>;
   });
 };
 
-// --- FLUID TYPING ANIMATION COMPONENT ---
-const TypewriterText = ({ text, onComplete, onTick }: { text: string, onComplete: () => void, onTick: () => void }) => {
+// --- BULLETPROOF TYPEWRITER COMPONENT ---
+const TypewriterText = ({ text, onComplete, onTick }: { text: any, onComplete: () => void, onTick: () => void }) => {
+  // Force absolute safe string conversion to prevent `.substring is not a function` error
+  const safeText = Array.isArray(text) ? text.join('\n\n') : (typeof text === 'object' ? JSON.stringify(text) : String(text || ""));
+  
   const [displayedLength, setDisplayedLength] = useState(0);
   
   useEffect(() => {
     let currentLen = 0;
-    // Dynamic Speed: Short answers type slower, long answers type faster (keeps animation ~1.5s total)
-    const stepSize = Math.max(1, Math.floor(text.length / 100)); 
+    const stepSize = Math.max(1, Math.floor(safeText.length / 100)); 
     
     const timer = setInterval(() => {
       currentLen += stepSize; 
       setDisplayedLength(currentLen);
       onTick();
-      if (currentLen >= text.length) {
+      if (currentLen >= safeText.length) {
         clearInterval(timer);
         onComplete();
       }
     }, 15); 
     
     return () => clearInterval(timer);
-  }, [text, onComplete, onTick]);
+  }, [safeText, onComplete, onTick]);
 
-  return <>{formatText(text.substring(0, displayedLength))}</>;
+  // Using .slice() which is universally safer on JS objects than .substring()
+  return <>{formatText(safeText.slice(0, displayedLength))}</>;
 };
 
 export default function ChatPage() {
@@ -85,11 +104,15 @@ export default function ChatPage() {
   const [timeOfDay, setTimeOfDay] = useState<"morning" | "afternoon" | "evening">("morning");
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const t = TRANSLATIONS[langCode] || TRANSLATIONS["en"];
+  
+  const getText = (key: string) => {
+    const langDict = TRANSLATIONS[langCode] || TRANSLATIONS["en"];
+    return langDict[key] || TRANSLATIONS["en"][key] || key;
+  };
 
   useEffect(() => {
     const saved = localStorage.getItem("izana_language");
-    if (saved && TRANSLATIONS[saved]) setLangCode(saved);
+    if (saved) setLangCode(saved);
     const hour = new Date().getHours();
     if (hour < 12) setTimeOfDay("morning");
     else if (hour < 18) setTimeOfDay("afternoon");
@@ -112,10 +135,11 @@ export default function ChatPage() {
   }, [isLoading, messages.length]);
 
   const handleSend = async (text = input, isHiddenQuery = false) => {
-    if (!text.trim() || isLoading) return;
+    const queryText = text || input;
+    if (!queryText.trim() || isLoading) return;
     
     if (!isHiddenQuery) {
-      setMessages(prev => [...prev, { id: Date.now(), type: "user", content: text }]);
+      setMessages(prev => [...prev, { id: Date.now(), type: "user", content: queryText }]);
     }
     
     setInput("");
@@ -125,16 +149,22 @@ export default function ChatPage() {
       const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: text, language: langCode })
+        body: JSON.stringify({ message: queryText, language: langCode })
       });
       const data = await res.json();
+      
+      // CRITICAL SAFETY CHECK: Intercept and force valid arrays/strings
+      const safeResponse = Array.isArray(data.response) ? data.response.join('\n\n') : String(data.response || "No response received.");
+      const safeCitations = Array.isArray(data.citations) ? data.citations.map((c: any) => cleanCitation(c)) : [];
+      const safeQuestions = Array.isArray(data.suggested_questions) ? data.suggested_questions.map((q: any) => String(q)) : [];
+
       setMessages(prev => [...prev, { 
         id: Date.now() + 1, 
         type: "bot", 
-        content: data.response, 
-        citations: data.citations, 
-        suggested_questions: data.suggested_questions || [],
-        questionOriginal: text, 
+        content: safeResponse, 
+        citations: safeCitations, 
+        suggested_questions: safeQuestions,
+        questionOriginal: queryText, 
         rating: 0, 
         feedbackSubmitted: false, 
         showReasonBox: false,
@@ -190,15 +220,15 @@ export default function ChatPage() {
         {messages.length === 0 ? (
           <div className="h-full flex flex-col items-center justify-center -mt-4">
             <motion.h2 initial={{opacity:0, y:10}} animate={{opacity:1, y:0}} className="text-3xl font-light text-slate-800 dark:text-white mb-8 text-center">
-              <span className="font-bold text-teal-700">{t[timeOfDay]}</span>
+              <span className="font-bold text-teal-700">{getText(timeOfDay)}</span>
             </motion.h2>
-            <p className="text-xs text-slate-400 uppercase tracking-widest font-semibold mb-6 text-center">{t.topics}</p>
+            <p className="text-xs text-slate-400 uppercase tracking-widest font-semibold mb-6 text-center">{getText("topics")}</p>
             
             <div className="grid grid-cols-2 md:grid-cols-3 gap-3 w-full max-w-2xl px-2">
               {TOPIC_ICONS.map((topic, i) => (
-                <button key={i} onClick={() => handleSend(t[topic.queryKey], true)} className="flex flex-col items-center gap-3 p-4 bg-white dark:bg-slate-800 rounded-3xl shadow-[0_8px_30px_rgb(0,0,0,0.04)] hover:shadow-[0_8px_30px_rgb(0,0,0,0.08)] active:scale-95 transition-all border border-slate-100 dark:border-slate-700 group">
+                <button key={i} onClick={() => handleSend(getText(topic.queryKey), true)} className="flex flex-col items-center gap-3 p-4 bg-white dark:bg-slate-800 rounded-3xl shadow-[0_8px_30px_rgb(0,0,0,0.04)] hover:shadow-[0_8px_30px_rgb(0,0,0,0.08)] active:scale-95 transition-all border border-slate-100 dark:border-slate-700 group">
                   <div className="p-3 bg-teal-50 dark:bg-teal-900/30 text-teal-600 dark:text-teal-400 rounded-full group-hover:bg-teal-600 group-hover:text-white transition-colors">{topic.icon}</div>
-                  <span className="text-[13px] font-medium text-slate-700 dark:text-slate-300 text-center leading-tight">{t[topic.labelKey]}</span>
+                  <span className="text-[13px] font-medium text-slate-700 dark:text-slate-300 text-center leading-tight">{getText(topic.labelKey)}</span>
                 </button>
               ))}
             </div>
@@ -222,7 +252,7 @@ export default function ChatPage() {
                     <motion.div initial={{ opacity: 0, y: 5 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4 }}>
                       {m.suggested_questions && m.suggested_questions.length > 0 && (
                         <div className="mt-5 flex flex-col gap-2 border-t border-white/10 pt-4">
-                          <p className="text-[11px] font-medium text-emerald-100 uppercase tracking-wider pl-1">{t.suggested}</p>
+                          <p className="text-[11px] font-medium text-emerald-100 uppercase tracking-wider pl-1">{getText("suggested")}</p>
                           {m.suggested_questions.map((sq: string, i: number) => (
                             <button 
                               key={i}
@@ -253,7 +283,7 @@ export default function ChatPage() {
                             {!m.feedbackSubmitted ? (
                               <motion.div key="rating" initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}} className="flex flex-col gap-3">
                                 <div className="flex items-center justify-between">
-                                  <span className="text-[11px] font-medium uppercase tracking-tighter opacity-80">{t.rate}</span>
+                                  <span className="text-[11px] font-medium uppercase tracking-tighter opacity-80">{getText("rate")}</span>
                                   <div className="flex gap-1.5">
                                     {[1, 2, 3, 4, 5].map((s) => (
                                       <button key={s} onClick={() => submitRating(m.id, s)} className={`text-lg transition-all hover:scale-125 active:scale-90 ${m.rating >= s ? 'filter-none' : 'grayscale opacity-30 hover:opacity-100'}`}>⭐</button>
@@ -262,9 +292,9 @@ export default function ChatPage() {
                                 </div>
                                 {m.showReasonBox && (
                                   <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} className="overflow-hidden">
-                                    <p className="text-[11px] font-bold text-teal-50 mb-2">{t.feedback_prompt}</p>
+                                    <p className="text-[11px] font-bold text-teal-50 mb-2">{getText("feedback_prompt")}</p>
                                     <div className="grid grid-cols-2 gap-2">
-                                      {[t.r1, t.r2, t.r3, t.r4].map((label, idx) => (
+                                      {[getText("r1"), getText("r2"), getText("r3"), getText("r4")].map((label, idx) => (
                                         <button key={idx} onClick={() => submitRating(m.id, m.rating, label)} className="text-[11px] bg-white/10 hover:bg-white/20 py-2.5 px-2 rounded-xl border border-white/10 transition-colors text-center active:scale-95">{label}</button>
                                       ))}
                                     </div>
@@ -274,7 +304,7 @@ export default function ChatPage() {
                             ) : (
                               <motion.div key="thanks" initial={{scale:0.9, opacity:0}} animate={{scale:1, opacity:1}} className="flex items-center gap-2 py-1 text-emerald-100">
                                 <CheckCircle2 className="w-4 h-4 text-emerald-200" />
-                                <span className="text-xs font-medium italic">{t.feedback_thanks}</span>
+                                <span className="text-xs font-medium italic">{getText("feedback_thanks")}</span>
                               </motion.div>
                             )}
                           </AnimatePresence>
@@ -306,7 +336,7 @@ export default function ChatPage() {
         <div className="max-w-3xl mx-auto relative">
           {!input && !isLoading && (
             <span className="absolute left-6 top-[18px] text-slate-400 dark:text-slate-500 pointer-events-none text-base hidden sm:block truncate w-2/3">
-              {t.shadow}
+              {getText("shadow")}
             </span>
           )}
           <div className="relative flex items-center shadow-[0_8px_30px_rgb(0,0,0,0.06)] rounded-full bg-white dark:bg-slate-800">
@@ -315,7 +345,7 @@ export default function ChatPage() {
               onChange={(e) => setInput(e.target.value)} 
               onKeyDown={(e) => e.key === 'Enter' && handleSend()} 
               disabled={isLoading} 
-              placeholder={t.placeholder} 
+              placeholder={getText("placeholder")} 
               className="w-full pl-6 pr-14 py-4 bg-transparent rounded-full focus:outline-none text-slate-800 dark:text-white placeholder-slate-400 sm:placeholder-transparent text-[15px]" 
             />
             <button 
@@ -326,7 +356,7 @@ export default function ChatPage() {
               <Send className="w-5 h-5 ml-0.5" />
             </button>
           </div>
-          <p className="text-[10px] text-center text-slate-400 mt-3 max-w-xl mx-auto leading-tight opacity-70">{t.disclaimer}</p>
+          <p className="text-[10px] text-center text-slate-400 mt-3 max-w-xl mx-auto leading-tight opacity-70">{getText("disclaimer")}</p>
         </div>
       </div>
     </div>
