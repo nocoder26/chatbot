@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
-import { Send, ArrowLeft, Loader2, Sparkles, BookOpen, Heart, Activity, CheckCircle2, ChevronRight, Dumbbell } from "lucide-react";
+import { Send, ArrowLeft, Loader2, Sparkles, BookOpen, Heart, Activity, CheckCircle2, ChevronRight, Moon } from "lucide-react";
 
 // --- FULL LOCALIZATION DICTIONARY ---
 const TRANSLATIONS: any = {
@@ -56,7 +56,6 @@ const cleanCitation = (raw: any) => {
   }
 };
 
-// Formats subheadings using the Brand Aqua (#86eae9) for high contrast against the Indigo background
 const formatText = (text: string) => {
   let clean = text.replace(/\*\*\s*\n/g, ''); 
   clean = clean.replace(/—/g, '-'); 
@@ -221,7 +220,6 @@ export default function ChatPage() {
           <button onClick={() => router.push("/")} className="p-2 rounded-full hover:bg-[#3231b1]/10 dark:hover:bg-white/10 transition-colors">
             <ArrowLeft className="w-5 h-5 text-[#212121] dark:text-[#f9f9f9]" />
           </button>
-          {/* BRAND LOGO HEADER */}
           <img src="/logo.png" alt="Izana AI" className="h-6 md:h-7 object-contain dark:invert" />
         </div>
         <select value={langCode} onChange={(e) => { setLangCode(e.target.value); localStorage.setItem("izana_language", e.target.value); }} className="bg-white dark:bg-[#3231b1] border border-black/10 dark:border-white/10 shadow-sm text-[#212121] dark:text-[#f9f9f9] text-xs py-1.5 px-3 rounded-full outline-none appearance-none font-medium">
@@ -251,19 +249,26 @@ export default function ChatPage() {
         ) : (
           <div className="space-y-6 max-w-3xl mx-auto">
             {messages.map((m) => (
-              <motion.div initial={{opacity:0, y:10}} animate={{opacity:1, y:0}} key={m.id} className={`flex ${m.type === 'user' ? 'justify-end' : 'justify-start'}`}>
+              <motion.div initial={{opacity:0, y:10}} animate={{opacity:1, y:0}} key={m.id} className={`flex w-full ${m.type === 'user' ? 'justify-end' : 'justify-start gap-2 sm:gap-3'}`}>
                 
-                <div className={`max-w-[92%] sm:max-w-[85%] rounded-3xl p-5 shadow-[0_4px_20px_rgb(0,0,0,0.03)] ${m.type === 'user' ? 'bg-white dark:bg-[#3231b1]/20 border border-black/5 dark:border-white/10 text-[#212121] dark:text-white rounded-br-sm' : 'bg-gradient-to-br from-[#3231b1] to-[#230871] text-[#f9f9f9] rounded-bl-sm'}`}>
+                {/* BOT AVATAR LOGO */}
+                {m.type === 'bot' && (
+                  <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-white border border-black/10 dark:border-white/10 shadow-sm flex items-center justify-center shrink-0 mt-1 overflow-hidden p-1.5">
+                    <img src="/logo.png" alt="Izana AI" className="w-full h-full object-contain dark:invert" />
+                  </div>
+                )}
+
+                <div className={`max-w-[85%] sm:max-w-[80%] rounded-3xl p-5 shadow-[0_4px_20px_rgb(0,0,0,0.03)] ${m.type === 'user' ? 'bg-white dark:bg-[#3231b1]/20 border border-black/5 dark:border-white/10 text-[#212121] dark:text-white rounded-br-sm' : 'bg-gradient-to-br from-[#3231b1] to-[#230871] text-[#f9f9f9] rounded-bl-sm'}`}>
                   
                   <div className="whitespace-pre-wrap leading-relaxed text-[15px] sm:text-base">
                     {m.isAnimating ? (
                       <TypewriterText text={m.content} onComplete={() => markAnimationComplete(m.id)} onTick={scrollToBottomInstant} />
                     ) : (
-                      formatText(m.content)
+                      (typeof m.content === 'string' ? m.content : String(m.content)).replace(/\*\*/g, '').replace(/\*/g, '').replace(/—/g, '-')
                     )}
                   </div>
                   
-                  {!m.isAnimating && (
+                  {!m.isAnimating && m.type === 'bot' && (
                     <motion.div initial={{ opacity: 0, y: 5 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4 }}>
                       {m.suggested_questions && m.suggested_questions.length > 0 && (
                         <div className="mt-5 flex flex-col gap-2 border-t border-white/10 pt-4">
@@ -292,47 +297,49 @@ export default function ChatPage() {
                         </div>
                       )}
 
-                      {m.type === 'bot' && (
-                        <div className="mt-4 pt-3 border-t border-white/10">
-                          <AnimatePresence mode="wait">
-                            {!m.feedbackSubmitted ? (
-                              <motion.div key="rating" initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}} className="flex flex-col gap-3">
-                                <div className="flex items-center justify-between">
-                                  <span className="text-[11px] font-bold uppercase tracking-tighter opacity-70">{getText("rate")}</span>
-                                  <div className="flex gap-1.5">
-                                    {[1, 2, 3, 4, 5].map((s) => (
-                                      <button key={s} onClick={() => submitRating(m.id, s)} className={`text-lg transition-all hover:scale-125 active:scale-90 ${m.rating >= s ? 'filter-none' : 'grayscale opacity-30 hover:opacity-100'}`}>⭐</button>
+                      <div className="mt-4 pt-3 border-t border-white/10">
+                        <AnimatePresence mode="wait">
+                          {!m.feedbackSubmitted ? (
+                            <motion.div key="rating" initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}} className="flex flex-col gap-3">
+                              <div className="flex items-center justify-between">
+                                <span className="text-[11px] font-bold uppercase tracking-tighter opacity-70">{getText("rate")}</span>
+                                <div className="flex gap-1.5">
+                                  {[1, 2, 3, 4, 5].map((s) => (
+                                    <button key={s} onClick={() => submitRating(m.id, s)} className={`text-lg transition-all hover:scale-125 active:scale-90 ${m.rating >= s ? 'filter-none' : 'grayscale opacity-30 hover:opacity-100'}`}>⭐</button>
+                                  ))}
+                                </div>
+                              </div>
+                              {m.showReasonBox && (
+                                <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} className="overflow-hidden">
+                                  <p className="text-[11px] font-bold text-white mb-2">{getText("feedback_prompt")}</p>
+                                  <div className="grid grid-cols-2 gap-2">
+                                    {[getText("r1"), getText("r2"), getText("r3"), getText("r4")].map((label, idx) => (
+                                      <button key={idx} onClick={() => submitRating(m.id, m.rating, label)} className="text-[11px] bg-white/10 hover:bg-[#ff7a55] py-2.5 px-2 rounded-xl border border-white/10 transition-colors text-center font-bold active:scale-95">{label}</button>
                                     ))}
                                   </div>
-                                </div>
-                                {m.showReasonBox && (
-                                  <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} className="overflow-hidden">
-                                    <p className="text-[11px] font-bold text-white mb-2">{getText("feedback_prompt")}</p>
-                                    <div className="grid grid-cols-2 gap-2">
-                                      {[getText("r1"), getText("r2"), getText("r3"), getText("r4")].map((label, idx) => (
-                                        <button key={idx} onClick={() => submitRating(m.id, m.rating, label)} className="text-[11px] bg-white/10 hover:bg-[#ff7a55] py-2.5 px-2 rounded-xl border border-white/10 transition-colors text-center font-bold active:scale-95">{label}</button>
-                                      ))}
-                                    </div>
-                                  </motion.div>
-                                )}
-                              </motion.div>
-                            ) : (
-                              <motion.div key="thanks" initial={{scale:0.9, opacity:0}} animate={{scale:1, opacity:1}} className="flex items-center gap-2 py-1 text-[#86eae9]">
-                                <CheckCircle2 className="w-4 h-4 text-[#86eae9]" />
-                                <span className="text-xs font-bold italic">{getText("feedback_thanks")}</span>
-                              </motion.div>
-                            )}
-                          </AnimatePresence>
-                        </div>
-                      )}
+                                </motion.div>
+                              )}
+                            </motion.div>
+                          ) : (
+                            <motion.div key="thanks" initial={{scale:0.9, opacity:0}} animate={{scale:1, opacity:1}} className="flex items-center gap-2 py-1 text-[#86eae9]">
+                              <CheckCircle2 className="w-4 h-4 text-[#86eae9]" />
+                              <span className="text-xs font-bold italic">{getText("feedback_thanks")}</span>
+                            </motion.div>
+                          )}
+                        </AnimatePresence>
+                      </div>
                     </motion.div>
                   )}
                 </div>
               </motion.div>
             ))}
             
+            {/* TYPING INDICATOR WITH LOGO AVATAR */}
             {isLoading && (
-               <motion.div initial={{opacity:0, y:10}} animate={{opacity:1, y:0}} className="flex justify-start">
+               <motion.div initial={{opacity:0, y:10}} animate={{opacity:1, y:0}} className="flex justify-start gap-2 sm:gap-3 w-full">
+                 <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-white border border-black/10 dark:border-white/10 shadow-sm flex items-center justify-center shrink-0 mt-1 overflow-hidden p-1.5">
+                    <img src="/logo.png" alt="Izana AI" className="w-full h-full object-contain dark:invert" />
+                 </div>
                  <div className="bg-white dark:bg-[#3231b1]/20 border border-black/5 dark:border-white/10 rounded-3xl rounded-bl-sm px-5 py-4 flex items-center gap-3 shadow-[0_4px_20px_rgb(0,0,0,0.03)]">
                    <Loader2 className="w-5 h-5 animate-spin text-[#3231b1] dark:text-[#86eae9]" />
                    <motion.span key={loadingStep} initial={{ opacity: 0, y: 2 }} animate={{ opacity: 1, y: 0 }} className="text-sm font-bold text-[#3231b1] dark:text-[#86eae9]">
@@ -363,7 +370,6 @@ export default function ChatPage() {
               placeholder={getText("placeholder")} 
               className="w-full pl-6 pr-14 py-4 bg-transparent rounded-full focus:outline-none text-[#212121] dark:text-[#f9f9f9] placeholder-[#212121]/40 sm:placeholder-transparent text-[15px]" 
             />
-            {/* BRAND CORAL SEND BUTTON */}
             <button 
               onClick={() => handleSend()} 
               disabled={isLoading || !input} 
