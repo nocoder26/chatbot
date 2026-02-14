@@ -2,17 +2,18 @@ import os
 import json
 import uuid
 import traceback
+import re
 from datetime import datetime, timedelta
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from pinecone import Pinecone
 from openai import OpenAI
 from groq import Groq
+import cohere  
 
 router = APIRouter()
 
 # --- CONFIG ---
-# We use /tmp because sometimes server permissions block /app/data
 GAP_LOG_FILE = "/tmp/gap_logs.json"
 FEEDBACK_LOG_FILE = "/tmp/feedback_logs.json"
 CACHE_NAMESPACE = "semantic-cache"
@@ -23,12 +24,13 @@ try:
     index = pc.Index(os.getenv("PINECONE_INDEX_NAME"))
     openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
     groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-    print("✅ STARTUP SUCCESS: AI Tools & Semantic Cache Ready")
+    cohere_key = os.getenv("COHERE_API_KEY", "8LT29K24AsAQZbJCYlvz4eHPTtN5duyZkQF1QtXw")
+    cohere_client = cohere.Client(cohere_key) if cohere_key else None
+    print("✅ STARTUP SUCCESS: Fail-Safe AI Pipeline Ready")
 except Exception as e:
     print(f"❌ STARTUP FAILED: {str(e)}")
-    pc, index, openai_client, groq_client = None, None, None, None
+    pc, index, openai_client, groq_client, cohere_client = None, None, None, None, None
 
-# --- DATA MODELS ---
 class ChatRequest(BaseModel):
     message: str
     language: str = "English"
@@ -38,10 +40,9 @@ class FeedbackRequest(BaseModel):
     answer: str
     rating: int
     reason: str = ""
+    suggested_questions: list = []
 
-# --- HELPER FUNCTIONS ---
 def cleanup_logs():
-    """Deletes data older than 24 hours for privacy."""
     try:
         cutoff = datetime.now() - timedelta(hours=24)
         for filepath in [GAP_LOG_FILE, FEEDBACK_LOG_FILE]:
@@ -51,8 +52,8 @@ def cleanup_logs():
                 new_logs = [log for log in logs if datetime.fromisoformat(log["timestamp"]) > cutoff]
                 with open(filepath, "w") as f:
                     json.dump(new_logs, f, indent=2)
-    except Exception as e:
-        print(f"Cleanup Error: {e}")
+    except Exception:
+        pass
 
 def save_log(filepath, entry):
     try:
@@ -63,91 +64,179 @@ def save_log(filepath, entry):
                 if content:
                     logs = json.loads(content)
         logs.append(entry)
-        # Keep logs manageable
         if len(logs) > 100: logs = logs[-100:]
         with open(filepath, "w") as f:
             json.dump(logs, f, indent=2)
-    except Exception as e:
-        print(f"Log Error: {e}")
+    except Exception:
+        pass
 
-# --- ENDPOINTS ---
+def clean_citation(raw_source: str) -> str:
+    try:
+        name = raw_source.split('/')[-1]
+        name = name.rsplit('.', 1)[0]
+        name = re.sub(r'(?i)_compress|-compress|_final_version|_\d_\d|nbsped|factsheet', '', name)
+        name = re.sub(r'\d{8,}', '', name) 
+        name = name.replace('_', ' ').replace('-', ' ')
+        return ' '.join(name.split()).title()
+    except:
+        return "Medical Reference Document"
 
 @router.post("/chat")
 async def chat_endpoint(request: ChatRequest, background_tasks: BackgroundTasks):
     if not groq_client: raise HTTPException(500, "AI tools not initialized")
-    
-    # Run privacy cleanup in background
     background_tasks.add_task(cleanup_logs)
 
     try:
-        # 1. Embed Question
-        # CHANGED: Switched to 'text-embedding-ada-002' to fix the 0.03 score issue.
-        # This aligns with how most data is uploaded.
-        emb_resp = openai_client.embeddings.create(
-            input=request.message, 
-            model="text-embedding-ada-002"
-        )
-        vector = emb_resp.data[0].embedding
+        # 1. MULTI-QUERY
+        try:
+            mq_prompt = f"Generate 2 alternative search queries to maximize medical document retrieval for: '{request.message}'. Return ONLY the 2 queries separated by a newline."
+            mq_completion = groq_client.chat.completions.create(
+                messages=[{"role": "user", "content": mq_prompt}],
+                model="llama-3.1-8b-instant",
+                temperature=0.2
+            )
+            expanded_queries = [request.message] + [q.strip() for q in mq_completion.choices[0].message.content.split('\n') if q.strip()]
+            expanded_queries = expanded_queries[:3]
+        except Exception:
+            expanded_queries = [request.message] 
 
-        # 2. Check Semantic Cache
-        cache_resp = index.query(namespace=CACHE_NAMESPACE, vector=vector, top_k=1, include_metadata=True)
+        # 2. EMBEDDING
+        emb_resp = openai_client.embeddings.create(input=expanded_queries, model="text-embedding-ada-002")
+        vectors = [item.embedding for item in emb_resp.data]
+
+        # 3. CACHE CHECK
+        cache_resp = index.query(namespace=CACHE_NAMESPACE, vector=vectors[0], top_k=1, include_metadata=True)
         if cache_resp.matches and cache_resp.matches[0].score > 0.95:
+            cached_meta = cache_resp.matches[0].metadata
+            try: cached_qs = json.loads(cached_meta.get("suggested_questions", "[]"))
+            except: cached_qs = []
             return {
-                "response": cache_resp.matches[0].metadata["response"],
-                "citations": ["Verified Previous Answer"]
+                "response": cached_meta["response"],
+                "citations": ["Verified Community Answer"],
+                "suggested_questions": cached_qs,
+                "is_gap": False
             }
 
-        # 3. Search Knowledge Base
-        search_resp = index.query(vector=vector, top_k=5, include_metadata=True)
-        context_text = ""
-        citations = []
-        highest_score = 0.0
+        # 4. RETRIEVAL
+        unique_docs = {}
+        for vec in vectors:
+            search_resp = index.query(vector=vec, top_k=4, include_metadata=True)
+            for match in search_resp.matches:
+                unique_docs[match.id] = match
+                
+        doc_texts, doc_sources = [], []
+        for match in unique_docs.values():
+            txt = match.metadata.get('text', '')
+            if txt not in doc_texts:
+                doc_texts.append(txt)
+                doc_sources.append(match.metadata.get('source', 'Medical Database'))
 
-        for match in search_resp.matches:
-            if match.score > highest_score: highest_score = match.score
-            # Strict relevance check
-            if match.score > 0.75:
-                source = match.metadata.get("source", "Medical Database")
-                text_chunk = match.metadata.get('text', '')
-                context_text += f"Info from {source}: {text_chunk}\n\n"
-                if source not in citations: citations.append(source)
+        context_text, citations, highest_score = "", [], 0.0
 
-        # 4. Gap Detection
-        is_gap = False
-        if highest_score < 0.75:
-            is_gap = True
-            entry = {"timestamp": datetime.now().isoformat(), "question": request.message, "score": float(highest_score), "type": "Gap"}
-            save_log(GAP_LOG_FILE, entry)
-            context_text += "Note: The specific fertility database had limited info, so use general medical knowledge.\n"
-            citations.append("General Medical Knowledge")
+        # 5. RERANKING
+        try:
+            if cohere_client and doc_texts:
+                rerank_resp = cohere_client.rerank(model="rerank-multilingual-v3.0", query=request.message, documents=doc_texts, top_n=4)
+                for r in rerank_resp.results:
+                    if r.relevance_score > highest_score: highest_score = r.relevance_score
+                    if r.relevance_score > 0.3:
+                        idx = r.index
+                        src = clean_citation(doc_sources[idx])
+                        context_text += f"Info from {src}: {doc_texts[idx]}\n\n"
+                        if src not in citations: citations.append(src)
+        except Exception:
+            sorted_matches = sorted(unique_docs.values(), key=lambda x: x.score, reverse=True)
+            highest_score = sorted_matches[0].score if sorted_matches else 0.0
+            for match in sorted_matches[:4]:
+                if match.score > 0.75:
+                    src = clean_citation(match.metadata.get("source", "Medical Database"))
+                    context_text += f"Info from {src}: {match.metadata.get('text', '')}\n\n"
+                    if src not in citations: citations.append(src)
 
-        # 5. Generate Response (Clean Text)
-        system_prompt = f"""
-        You are an empathetic fertility assistant. Language: {request.language}.
+        is_gap = highest_score < 0.3
+        if is_gap:
+            background_tasks.add_task(save_log, GAP_LOG_FILE, {"timestamp": datetime.now().isoformat(), "question": request.message, "score": float(highest_score), "type": "Gap"})
+            context_text += "Note: Medical database limited. Use general medical knowledge.\n"
+
+        # 6. DRAFT (70B) 
+        draft_prompt = f"""
+        Answer the following medical question based strictly on the CONTEXT. Language: {request.language}.
         
-        INSTRUCTIONS:
-        1. Answer the user's question using the CONTEXT provided.
-        2. TONE: Warm, hopeful, professional caregiver.
-        3. FORMAT: Do NOT use inline citations like [Source: X] in the text. The system will display sources separately. Just write a natural response.
-        4. ENDING: Always end with a relevant, gentle leading question.
-
-        CONTEXT:
-        {context_text}
+        CRITICAL RULES:
+        1. NO FIRST-PERSON PRONOUNS. Do not use "we", "our", "us", or "I". Talk in the third person plural (e.g., "healthcare providers", "clinics", "they").
+        2. NO EM-DASHES. Do not use —.
+        3. PLAIN TEXT ONLY. DO NOT use markdown, bold, or asterisks.
+        4. NO CANCER MENTIONS unless explicitly asked.
+        5. CONCISE: Be direct. Do not loop or repeat yourself.
+        
+        CONTEXT: {context_text}
         """
-
-        completion = groq_client.chat.completions.create(
-            messages=[
-                {"role": "system", "content": system_prompt}, 
-                {"role": "user", "content": request.message}
-            ],
+        draft_completion = groq_client.chat.completions.create(
+            messages=[{"role": "system", "content": draft_prompt}, {"role": "user", "content": request.message}],
             model="llama-3.3-70b-versatile",
-            temperature=0.3
+            temperature=0.2,
+            max_tokens=600, # Prevents runaway generation
+            frequency_penalty=0.4 # PREVENTS REPETITION LOOPS
         )
-        
+        draft_response = draft_completion.choices[0].message.content
+
+        # 7. QC FORMATTER (8B) 
+        try:
+            qc_prompt = f"""
+            You are a JSON formatting tool. Read the DRAFT RESPONSE below.
+            Language: {request.language}.
+
+            TASK:
+            1. Keep the exact tone of the draft. STRICTLY use third-person ("healthcare providers", "they").
+            2. Remove any bullet points, asterisks (*), bold marks (**), or em-dashes (—). Plain text ONLY.
+            3. Break the text into short, easy-to-read paragraphs separated by double blank lines.
+            4. Generate 3 clickable leading questions.
+            5. CRITICAL: DO NOT repeat any sentences. Stop generating when the thought is complete.
+            
+            DRAFT RESPONSE:
+            {draft_response}
+
+            OUTPUT FORMAT:
+            Return ONLY a JSON object:
+            {{
+                "revised_response": "The plain text response here. A SINGLE STRING.",
+                "suggested_questions": ["Q1", "Q2", "Q3"]
+            }}
+            """
+            qc_completion = groq_client.chat.completions.create(
+                messages=[{"role": "system", "content": qc_prompt}],
+                model="llama-3.1-8b-instant",
+                temperature=0.3,
+                max_tokens=600,
+                frequency_penalty=0.6, # STRICTLY PREVENTS REPETITION LOOPS
+                presence_penalty=0.2,
+                response_format={"type": "json_object"}
+            )
+            final_data = json.loads(qc_completion.choices[0].message.content)
+            
+            raw_response = final_data.get("revised_response", draft_response)
+            if isinstance(raw_response, list):
+                final_response = "\n\n".join([str(p) for p in raw_response])
+            elif isinstance(raw_response, dict):
+                final_response = "\n\n".join([str(v) for v in raw_response.values()])
+            else:
+                final_response = str(raw_response)
+                
+            final_response = final_response.replace("**", "").replace("*", "").replace("—", "-")
+                
+            suggested_questions = final_data.get("suggested_questions", [])
+            if not isinstance(suggested_questions, list):
+                suggested_questions = []
+
+        except Exception as e:
+            final_response = str(draft_response).replace("**", "").replace("*", "")
+            suggested_questions = ["What are the next steps?", "How long does the process take?", "Are there any side effects?"]
+
         return {
-            "response": completion.choices[0].message.content,
+            "response": final_response,
             "citations": citations,
-            "is_gap": is_gap
+            "is_gap": is_gap,
+            "suggested_questions": suggested_questions
         }
 
     except Exception as e:
@@ -155,42 +244,33 @@ async def chat_endpoint(request: ChatRequest, background_tasks: BackgroundTasks)
         raise HTTPException(500, str(e))
 
 @router.post("/feedback")
-async def submit_feedback(feedback: FeedbackRequest):
+async def submit_feedback(feedback: FeedbackRequest, background_tasks: BackgroundTasks):
     entry = {
         "timestamp": datetime.now().isoformat(),
         "rating": feedback.rating,
         "question": feedback.question,
         "reason": feedback.reason
     }
-    save_log(FEEDBACK_LOG_FILE, entry)
+    background_tasks.add_task(save_log, FEEDBACK_LOG_FILE, entry)
 
-    # Train system: Only save to cache if rating is 5 STARS
     if feedback.rating == 5:
         try:
             emb_resp = openai_client.embeddings.create(input=feedback.question, model="text-embedding-ada-002")
             vector = emb_resp.data[0].embedding
             index.upsert(
-                vectors=[{
-                    "id": str(uuid.uuid4()),
-                    "values": vector,
-                    "metadata": {"question": feedback.question, "response": feedback.answer}
-                }],
+                vectors=[{"id": str(uuid.uuid4()), "values": vector, "metadata": {"question": feedback.question, "response": feedback.answer, "suggested_questions": json.dumps(feedback.suggested_questions)}}],
                 namespace=CACHE_NAMESPACE
             )
-        except Exception as e:
-            print(f"Cache Error: {e}")
-    
+        except Exception:
+            pass
     return {"status": "Recorded"}
 
 @router.get("/admin/stats")
 async def get_stats():
     gaps, feedback = [], []
-    if os.path.exists(GAP_LOG_FILE):
-        with open(GAP_LOG_FILE) as f: 
-            try: gaps = json.load(f)
-            except: pass
-    if os.path.exists(FEEDBACK_LOG_FILE):
-        with open(FEEDBACK_LOG_FILE) as f: 
-            try: feedback = json.load(f)
-            except: pass
+    for log_file, target_list in [(GAP_LOG_FILE, gaps), (FEEDBACK_LOG_FILE, feedback)]:
+        if os.path.exists(log_file):
+            with open(log_file) as f: 
+                try: target_list.extend(json.load(f))
+                except: pass
     return {"gaps": gaps, "feedback": feedback}
