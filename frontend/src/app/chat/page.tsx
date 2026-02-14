@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import { Send, ArrowLeft, Loader2, Sparkles, BookOpen, Heart, Activity, Coins, CheckCircle2, ChevronRight } from "lucide-react";
@@ -70,6 +70,48 @@ const TOPIC_ICONS = [
 
 const LOADING_STEPS = ["Understanding your needs...", "Reading medical knowledge...", "Writing a caring response...", "Almost there..."];
 
+// Turns **Subheadings** into beautiful bold text dynamically
+const formatText = (text: string) => {
+  return text.split('**').map((part, i) => 
+    i % 2 === 1 ? <strong key={i} className="font-bold tracking-wide text-white drop-shadow-sm">{part}</strong> : part
+  );
+};
+
+// --- FLUID TYPING ANIMATION COMPONENT ---
+const TypewriterText = ({ text, onComplete, onTick }: { text: string, onComplete: () => void, onTick: () => void }) => {
+  const [displayed, setDisplayed] = useState("");
+  const onCompleteRef = useRef(onComplete);
+  const onTickRef = useRef(onTick);
+  
+  useEffect(() => {
+    onCompleteRef.current = onComplete;
+    onTickRef.current = onTick;
+  }, [onComplete, onTick]);
+
+  useEffect(() => {
+    let i = 0;
+    setDisplayed("");
+    
+    // Renders 4 characters every 15ms for a fast, incredibly smooth reading pace
+    const timer = setInterval(() => {
+      i += 4; 
+      if (i >= text.length) {
+        setDisplayed(text);
+        clearInterval(timer);
+        onCompleteRef.current();
+        setTimeout(() => onTickRef.current(), 50); // One final scroll tick
+      } else {
+        setDisplayed(text.slice(0, i));
+        onTickRef.current(); // Triggers the auto-scroll
+      }
+    }, 15); 
+    
+    return () => clearInterval(timer);
+  }, [text]);
+
+  return <>{formatText(displayed)}</>;
+};
+
 export default function ChatPage() {
   const router = useRouter();
   const [messages, setMessages] = useState<any[]>([]);
@@ -93,13 +135,29 @@ export default function ChatPage() {
 
   useEffect(() => {
     if (isLoading) {
-      const interval = setInterval(() => setLoadingStep(p => (p < 3 ? p + 1 : p)), 1800);
+      const interval = setInterval(() => setLoadingStep(p => (p < 3 ? p + 1 : p)), 1000);
       return () => clearInterval(interval);
     }
     setLoadingStep(0);
   }, [isLoading]);
 
-  useEffect(() => messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }), [messages, loadingStep]);
+  // Smooth scroll logic for instant drops (like user message)
+  const scrollToBottomSmooth = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  };
+
+  // Instant scroll logic for rapid ticking (during typing animation)
+  const scrollToBottomInstant = useCallback(() => {
+    if (messagesEndRef.current) {
+      messagesEndRef.current.scrollIntoView({ behavior: "auto", block: "end" });
+    }
+  }, []);
+
+  useEffect(() => {
+    if (isLoading || messages.length > 0) {
+      scrollToBottomSmooth();
+    }
+  }, [isLoading, messages.length]); // Only smooth scroll on new messages or loading state
 
   const handleSend = async (text = input) => {
     if (!text.trim() || isLoading) return;
@@ -120,15 +178,21 @@ export default function ChatPage() {
         type: "bot", 
         content: data.response, 
         citations: data.citations, 
-        suggested_questions: data.suggested_questions || [], // NEW: Capture questions
+        suggested_questions: data.suggested_questions || [],
         questionOriginal: text, 
         rating: 0, 
         feedbackSubmitted: false, 
-        showReasonBox: false
+        showReasonBox: false,
+        isAnimating: true // Triggers the Typewriter effect
       }]);
     } catch {
-      setMessages(prev => [...prev, { id: Date.now(), type: "bot", content: "Connection error. Please try again." }]);
+      setMessages(prev => [...prev, { id: Date.now(), type: "bot", content: "Connection error. Please try again.", isAnimating: false }]);
     } finally { setIsLoading(false); }
+  };
+
+  const markAnimationComplete = (id: number) => {
+    setMessages(prev => prev.map(m => m.id === id ? { ...m, isAnimating: false } : m));
+    setTimeout(scrollToBottomSmooth, 100); // Smoothly scroll to reveal buttons that fade in
   };
 
   const submitRating = async (msgId: number, rating: number, reason: string = "") => {
@@ -154,161 +218,9 @@ export default function ChatPage() {
   };
 
   return (
-    // NEW: Softer, warmer background color (#FDFBF7) for a calming caregiver vibe
-    <div className="flex flex-col h-screen bg-[#FDFBF7] dark:bg-slate-900 font-sans antialiased">
+    <div className="flex flex-col h-screen bg-[#FDFBF7] dark:bg-slate-900 font-sans antialiased overflow-hidden">
       
       {/* Header */}
-      <header className="flex justify-between items-center px-4 py-3 bg-[#FDFBF7]/80 backdrop-blur-md dark:bg-slate-900/80 z-10 sticky top-0">
+      <header className="flex justify-between items-center px-4 py-3 bg-[#FDFBF7]/80 backdrop-blur-md dark:bg-slate-900/80 z-10 sticky top-0 shrink-0">
         <div className="flex items-center gap-3">
-          <button onClick={() => router.push("/")} className="p-2 rounded-full hover:bg-black/5 dark:hover:bg-white/10 transition-colors">
-            <ArrowLeft className="w-5 h-5 text-slate-600 dark:text-slate-300" />
-          </button>
-          <span className="font-bold text-teal-800 dark:text-teal-400 text-lg tracking-tight">Izana AI</span>
-        </div>
-        <select value={langCode} onChange={(e) => { setLangCode(e.target.value); localStorage.setItem("izana_language", e.target.value); }} className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 shadow-sm text-slate-700 dark:text-slate-200 text-xs py-1.5 px-3 rounded-full outline-none appearance-none">
-          <option value="en">English</option><option value="es">Español</option><option value="ja">日本語</option><option value="zh">普通话</option><option value="hi">हिन्दी</option><option value="ta">தமிழ்</option><option value="te">తెలుగు</option><option value="ml">മലയാളം</option><option value="bn">বাংলা</option>
-        </select>
-      </header>
-
-      {/* Main Chat/Greeting Area */}
-      <div className="flex-1 overflow-y-auto p-4 relative chat-container pb-6">
-        {messages.length === 0 ? (
-          <div className="h-full flex flex-col items-center justify-center -mt-10">
-            <motion.h2 initial={{opacity:0, y:10}} animate={{opacity:1, y:0}} className="text-3xl font-light text-slate-800 dark:text-white mb-8 text-center">
-              <span className="font-bold text-teal-700">{t[timeOfDay]}</span>
-            </motion.h2>
-            <p className="text-xs text-slate-400 uppercase tracking-widest font-semibold mb-6 text-center">{t.topics}</p>
-            
-            <div className="grid grid-cols-2 md:grid-cols-3 gap-3 w-full max-w-2xl px-2">
-              {TOPIC_ICONS.map((topic, i) => (
-                <button key={i} onClick={() => handleSend(t[topic.key])} className="flex flex-col items-center gap-3 p-4 bg-white dark:bg-slate-800 rounded-3xl shadow-[0_8px_30px_rgb(0,0,0,0.04)] hover:shadow-[0_8px_30px_rgb(0,0,0,0.08)] active:scale-95 transition-all border border-slate-100 dark:border-slate-700 group">
-                  <div className="p-3 bg-teal-50 dark:bg-teal-900/30 text-teal-600 dark:text-teal-400 rounded-full group-hover:bg-teal-600 group-hover:text-white transition-colors">{topic.icon}</div>
-                  <span className="text-sm font-medium text-slate-700 dark:text-slate-300 text-center">{t[topic.key]}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-        ) : (
-          <div className="space-y-6 max-w-3xl mx-auto">
-            {messages.map((m) => (
-              <motion.div initial={{opacity:0, y:10}} animate={{opacity:1, y:0}} key={m.id} className={`flex ${m.type === 'user' ? 'justify-end' : 'justify-start'}`}>
-                
-                {/* NEW: Softer, rounder message bubbles */}
-                <div className={`max-w-[92%] sm:max-w-[85%] rounded-3xl p-5 shadow-[0_4px_20px_rgb(0,0,0,0.03)] ${m.type === 'user' ? 'bg-white dark:bg-slate-800 border border-slate-100 dark:border-slate-700 text-slate-800 dark:text-white rounded-br-sm' : 'bg-gradient-to-br from-teal-600 to-emerald-600 text-white rounded-bl-sm'}`}>
-                  
-                  <div className="whitespace-pre-wrap leading-relaxed text-[15px] sm:text-base">{m.content}</div>
-                  
-                  {/* NEW: 3 Clickable Leading Questions */}
-                  {m.suggested_questions && m.suggested_questions.length > 0 && (
-                    <div className="mt-5 flex flex-col gap-2 border-t border-white/10 pt-4">
-                      <p className="text-[11px] font-medium text-emerald-100 uppercase tracking-wider pl-1">{t.suggested}</p>
-                      {m.suggested_questions.map((sq: string, i: number) => (
-                        <button 
-                          key={i}
-                          onClick={() => handleSend(sq)}
-                          className="text-left text-sm bg-black/10 hover:bg-black/20 text-white py-2.5 px-4 rounded-2xl transition-all flex items-center justify-between gap-3 group active:scale-[0.98]"
-                        >
-                          <span className="leading-snug">{sq}</span>
-                          <ChevronRight className="w-4 h-4 text-emerald-200 group-hover:translate-x-1 transition-transform flex-shrink-0" />
-                        </button>
-                      ))}
-                    </div>
-                  )}
-
-                  {/* Citations section */}
-                  {m.citations && m.citations.length > 0 && (
-                    <div className="mt-4 pt-3 border-t border-white/10">
-                      <p className="text-[10px] font-bold uppercase tracking-wider opacity-70 mb-2">Citations</p>
-                      <div className="flex flex-wrap gap-2">
-                        {m.citations.map((c: string, i: number) => (
-                          <span key={i} className="text-[10px] bg-black/10 px-2.5 py-1 rounded-full cursor-default opacity-90">{c}</span>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Rating UI */}
-                  {m.type === 'bot' && (
-                    <div className="mt-4 pt-3 border-t border-white/10">
-                      <AnimatePresence mode="wait">
-                        {!m.feedbackSubmitted ? (
-                          <motion.div key="rating" initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}} className="flex flex-col gap-3">
-                            <div className="flex items-center justify-between">
-                              <span className="text-[11px] font-medium uppercase tracking-tighter opacity-80">{t.rate}</span>
-                              <div className="flex gap-1.5">
-                                {[1, 2, 3, 4, 5].map((s) => (
-                                  <button key={s} onClick={() => submitRating(m.id, s)} className={`text-lg transition-all hover:scale-125 active:scale-90 ${m.rating >= s ? 'filter-none' : 'grayscale opacity-30 hover:opacity-100'}`}>⭐</button>
-                                ))}
-                              </div>
-                            </div>
-                            {m.showReasonBox && (
-                              <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} className="overflow-hidden">
-                                <p className="text-[11px] font-bold text-teal-50 mb-2">{t.feedback_prompt}</p>
-                                <div className="grid grid-cols-2 gap-2">
-                                  {[t.r1, t.r2, t.r3, t.r4].map((label, idx) => (
-                                    <button key={idx} onClick={() => submitRating(m.id, m.rating, label)} className="text-[11px] bg-white/10 hover:bg-white/20 py-2.5 px-2 rounded-xl border border-white/10 transition-colors text-center active:scale-95">{label}</button>
-                                  ))}
-                                </div>
-                              </motion.div>
-                            )}
-                          </motion.div>
-                        ) : (
-                          <motion.div key="thanks" initial={{scale:0.9, opacity:0}} animate={{scale:1, opacity:1}} className="flex items-center gap-2 py-1 text-emerald-100">
-                            <CheckCircle2 className="w-4 h-4 text-emerald-200" />
-                            <span className="text-xs font-medium italic">{t.feedback_thanks}</span>
-                          </motion.div>
-                        )}
-                      </AnimatePresence>
-                    </div>
-                  )}
-                </div>
-              </motion.div>
-            ))}
-            
-            {/* Loading Indicator */}
-            {isLoading && (
-               <motion.div initial={{opacity:0, y:10}} animate={{opacity:1, y:0}} className="flex justify-start">
-                 <div className="bg-white dark:bg-slate-800 border border-slate-100 dark:border-slate-700 rounded-3xl rounded-bl-sm px-5 py-4 flex items-center gap-3 shadow-[0_4px_20px_rgb(0,0,0,0.03)]">
-                   <Loader2 className="w-5 h-5 animate-spin text-teal-600" />
-                   <motion.span key={loadingStep} initial={{ opacity: 0, y: 2 }} animate={{ opacity: 1, y: 0 }} className="text-sm font-medium text-slate-600 dark:text-slate-300">
-                     {LOADING_STEPS[loadingStep]}
-                   </motion.span>
-                 </div>
-               </motion.div>
-            )}
-            <div ref={messagesEndRef} className="h-4" />
-          </div>
-        )}
-      </div>
-
-      {/* Input Bar */}
-      <div className="p-4 bg-[#FDFBF7] dark:bg-slate-900 border-t border-slate-100 dark:border-slate-800 pb-safe">
-        <div className="max-w-3xl mx-auto relative">
-          {!input && !isLoading && (
-            <span className="absolute left-6 top-[18px] text-slate-400 dark:text-slate-500 pointer-events-none text-base hidden sm:block truncate w-2/3">
-              {t.shadow}
-            </span>
-          )}
-          <div className="relative flex items-center shadow-[0_8px_30px_rgb(0,0,0,0.06)] rounded-full bg-white dark:bg-slate-800">
-            <input 
-              value={input} 
-              onChange={(e) => setInput(e.target.value)} 
-              onKeyDown={(e) => e.key === 'Enter' && handleSend()} 
-              disabled={isLoading} 
-              placeholder={t.placeholder} 
-              className="w-full pl-6 pr-14 py-4 bg-transparent rounded-full focus:outline-none text-slate-800 dark:text-white placeholder-slate-400 sm:placeholder-transparent text-[15px]" 
-            />
-            <button 
-              onClick={() => handleSend()} 
-              disabled={isLoading || !input} 
-              className="absolute right-2 p-2.5 bg-teal-600 rounded-full text-white hover:bg-teal-700 active:scale-90 disabled:opacity-40 disabled:active:scale-100 transition-all"
-            >
-              <Send className="w-5 h-5 ml-0.5" />
-            </button>
-          </div>
-          <p className="text-[10px] text-center text-slate-400 mt-3 max-w-xl mx-auto leading-tight opacity-70">{t.disclaimer}</p>
-        </div>
-      </div>
-    </div>
-  );
-}
+          <button onClick={() => router.push("/")} className="p-2 rounded-full hover:bg-black/5
