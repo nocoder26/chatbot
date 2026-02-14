@@ -20,10 +20,16 @@ const TRANSLATIONS: any = {
     t_sleep: "Sleep & Fertility", t_sleep_q: "How does sleep affect fertility treatment success?",
     t_success: "Improving Success", t_success_q: "What are 10 things you can do right now to improve fertility treatment success rates?",
     r1: "Inaccurate", r2: "Vague", r3: "Tone", r4: "Other",
-    suggested: "Suggested for you:"
+    suggested: "Continue exploring:"
   },
-  es: { morning: "Buenos Días", afternoon: "Buenas Tardes", evening: "Buenas Noches", topics: "Temas para preguntar", placeholder: "Escribe tu pregunta...", disclaimer: "Izana AI no proporciona diagnósticos médicos.", rate: "Califica esta respuesta", feedback_prompt: "¿Qué faltó?", feedback_thanks: "¡Gracias!", shadow: "Prueba: \"¿Qué cambios mejoran la FIV?\"", suggested: "Sugerido:" },
-  ja: { morning: "おはようございます", afternoon: "こんにちは", evening: "こんばんは", topics: "トピック", placeholder: "質問を入力...", disclaimer: "Izana AIは診断を提供しません。", rate: "評価する", feedback_prompt: "何が不足していましたか？", feedback_thanks: "ありがとうございます！", shadow: "例：「IVFの成功率を上げるには？」", suggested: "提案:" }
+  es: { morning: "Buenos Días", afternoon: "Buenas Tardes", evening: "Buenas Noches", topics: "Temas para preguntar", placeholder: "Escribe tu pregunta...", disclaimer: "Izana AI no proporciona diagnósticos médicos.", rate: "Califica esta respuesta", feedback_prompt: "¿Qué faltó?", feedback_thanks: "¡Gracias!", shadow: "Prueba: \"¿Qué cambios mejoran la FIV?\"", suggested: "Sigue explorando:" },
+  ja: { morning: "おはようございます", afternoon: "こんにちは", evening: "こんばんは", topics: "トピック", placeholder: "質問を入力...", disclaimer: "Izana AIは診断を提供しません。", rate: "評価する", feedback_prompt: "何が不足していましたか？", feedback_thanks: "ありがとうございます！", shadow: "例：「IVFの成功率を上げるには？」", suggested: "さらに詳しく:" },
+  zh: { morning: "早上好", afternoon: "下午好", evening: "晚上好", topics: "推荐主题", placeholder: "输入问题...", disclaimer: "Izana AI 不提供医疗诊断。", rate: "评价此回复", feedback_prompt: "哪里不足？", feedback_thanks: "感谢您！", shadow: "试试问：“如何提高成功率？”", suggested: "继续探索:" },
+  hi: { morning: "सुप्रभात", afternoon: "नमस्कार", evening: "शुभ संध्या", topics: "विषय", placeholder: "प्रश्न लिखें...", disclaimer: "Izana AI निदान प्रदान नहीं करता है।", rate: "मूल्यांकन करें", feedback_prompt: "क्या कमी थी?", feedback_thanks: "धन्यवाद!", shadow: "पूछें: \"IVF सफलता दर कैसे बढ़ाएं?\"", suggested: "आगे जानें:" },
+  ta: { morning: "காலை வணக்கம்", afternoon: "மதிய வணக்கம்", evening: "மாலை வணக்கம்", topics: "தலைப்புகள்", placeholder: "கேட்கவும்...", disclaimer: "Izana AI நோயறிதலை வழங்காது.", rate: "மதிப்பிடவும்", feedback_prompt: "என்ன குறை?", feedback_thanks: "நன்றி!", shadow: "கேட்கவும்: \"வெற்றி விகிதத்தை கூட்டுவது எப்படி?\"", suggested: "மேலும் ஆராய:" },
+  te: { morning: "శుభోదయం", afternoon: "శుభ మధ్యాహ్నం", evening: "శుభ సాయంత్రం", topics: "అంశాలు", placeholder: "ప్రశ్న...", disclaimer: "Izana AI రోగనిర్ధారణ అందించదు.", rate: "రేట్ చేయండి", feedback_prompt: "లోపం ఏమిటి?", feedback_thanks: "ధన్యవాదాలు!", shadow: "ప్రయత్నించండి: \"IVF విజయం ఎలా?\"", suggested: "మరింత అన్వేషించండి:" },
+  ml: { morning: "സുപ്രഭാതം", afternoon: "ഗുഡ് ആഫ്റ്റർനൂൺ", evening: "ശുഭ സായാഹ്നം", topics: "വിഷയങ്ങൾ", placeholder: "ചോദിക്കൂ...", disclaimer: "Izana AI രോഗനിർണയം നൽകുന്നില്ല.", rate: "വിലയിരുത്തുക", feedback_prompt: "എന്താണ് കുറവ്?", feedback_thanks: "നന്ദി!", shadow: "ചോദിക്കുക: \"വിജയസാധ്യത എങ്ങനെ കൂട്ടാം?\"", suggested: "കൂടുതൽ അറിയുക:" },
+  bn: { morning: "সুপ্রভাত", afternoon: "শুভ দুপুর", evening: "শুভ সন্ধ্যা", topics: "বিষয়", placeholder: "লিখুন...", disclaimer: "Izana AI চিকিৎসা পরামর্শ দেয় না।", rate: "রেটিং দিন", feedback_prompt: "কি কম ছিল?", feedback_thanks: "ধন্যবাদ!", shadow: "জিজ্ঞাসা করুন: \"সাফল্যের হার কত?\"", suggested: "আরও জানুন:" }
 };
 
 const TOPIC_ICONS = [
@@ -60,13 +66,13 @@ const TypewriterText = ({ text, onComplete, onTick }: { text: any, onComplete: (
   else safeText = String(text || "");
 
   // Wipe out any markdown that managed to slip through
-  safeText = safeText.replace(/\*\*/g, '').replace(/\*/g, ''); 
+  safeText = safeText.replace(/\*\*/g, '').replace(/\*/g, '').replace(/—/g, '-'); 
 
   const [displayedLength, setDisplayedLength] = useState(0);
   
   useEffect(() => {
     let currentLen = 0;
-    // Slower, natural reading speed (approx 50 chars per second)
+    // Slower, natural reading speed
     const timer = setInterval(() => {
       currentLen += 1; 
       setDisplayedLength(currentLen);
@@ -132,7 +138,7 @@ export default function ChatPage() {
     }
     
     setInput("");
-    setIsLoading(true); // This instantly flips the UI state
+    setIsLoading(true);
 
     try {
       const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/chat`, {
@@ -206,7 +212,6 @@ export default function ChatPage() {
       {/* Main Chat Area */}
       <div className="flex-1 overflow-y-auto p-4 relative chat-container pb-10">
         
-        {/* CRITICAL FIX: Ensure loading state immediately switches UI to chat mode */}
         {messages.length === 0 && !isLoading ? (
           <div className="h-full flex flex-col items-center justify-center -mt-4">
             <motion.h2 initial={{opacity:0, y:10}} animate={{opacity:1, y:0}} className="text-3xl font-light text-slate-800 dark:text-white mb-8 text-center">
@@ -234,8 +239,7 @@ export default function ChatPage() {
                     {m.isAnimating ? (
                       <TypewriterText text={m.content} onComplete={() => markAnimationComplete(m.id)} onTick={scrollToBottomInstant} />
                     ) : (
-                      // Ensure text is clean string after animation too
-                      (typeof m.content === 'string' ? m.content : String(m.content)).replace(/\*\*/g, '').replace(/\*/g, '')
+                      (typeof m.content === 'string' ? m.content : String(m.content)).replace(/\*\*/g, '').replace(/\*/g, '').replace(/—/g, '-')
                     )}
                   </div>
                   
