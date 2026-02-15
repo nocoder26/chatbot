@@ -17,7 +17,7 @@ router = APIRouter()
 # --- CONFIG ---
 GAP_LOG_FILE = "/tmp/gap_logs.json"
 FEEDBACK_LOG_FILE = "/tmp/feedback_logs.json"
-DOC_USAGE_LOG_FILE = "/tmp/doc_usage_logs.json" # NEW: Tracks document citations
+DOC_USAGE_LOG_FILE = "/tmp/doc_usage_logs.json"
 CACHE_NAMESPACE = "semantic-cache"
 
 # --- INITIALIZATION ---
@@ -38,6 +38,7 @@ class ChatRequest(BaseModel):
     language: str = "English"
     clinical_data: Optional[Dict[str, Any]] = None
     treatment: Optional[str] = None
+    interaction_count: int = 0 # NEW: Track conversation depth
 
 class FeedbackRequest(BaseModel):
     question: str
@@ -68,7 +69,7 @@ def save_log(filepath, entry):
                 if content:
                     logs = json.loads(content)
         logs.append(entry)
-        if len(logs) > 500: logs = logs[-500:] # Keep more logs for doc usage
+        if len(logs) > 500: logs = logs[-500:]
         with open(filepath, "w") as f:
             json.dump(logs, f, indent=2)
     except Exception:
@@ -91,7 +92,6 @@ async def chat_endpoint(request: ChatRequest, background_tasks: BackgroundTasks)
     background_tasks.add_task(cleanup_logs)
 
     try:
-        # --- BLOOD WORK ANALYSIS BRANCH ---
         is_blood_work = request.clinical_data is not None
         missing_params_text = ""
         
@@ -100,15 +100,7 @@ async def chat_endpoint(request: ChatRequest, background_tasks: BackgroundTasks)
             lab_summary = ", ".join([f"{r.get('name')}: {r.get('value')} {r.get('unit')}" for r in lab_results])
             treatment_context = request.treatment or "General Fertility"
             
-            # --- CHECK FOR MISSING FERTILITY PARAMETERS ---
-            # Quick LLM check to see if crucial data is missing
-            check_prompt = f"""
-            Review these extracted lab results: {lab_summary}
-            Crucial fertility parameters include: FSH, AMH, LH, Estradiol (E2), TSH, and Prolactin.
-            If ANY of these are completely missing from the results, list the names of the missing ones.
-            If they are all present, return the word 'COMPLETE'.
-            Return ONLY the list or 'COMPLETE'.
-            """
+            check_prompt = f"Review labs: {lab_summary}. Identify missing from: FSH, AMH, LH, Estradiol, TSH, Prolactin. Return list or 'COMPLETE'."
             try:
                 check_comp = groq_client.chat.completions.create(
                     messages=[{"role": "user", "content": check_prompt}],
@@ -116,46 +108,33 @@ async def chat_endpoint(request: ChatRequest, background_tasks: BackgroundTasks)
                     temperature=0.1
                 )
                 missing = check_comp.choices[0].message.content.strip()
-                if missing.upper() != "COMPLETE":
-                    missing_params_text = f"\n\nNote for analysis: The provided blood work does not appear to contain {missing}. In your response, gently ask the user if they have these values, as they provide a much more comprehensive picture of reproductive health."
-            except Exception:
-                pass
+                if "COMPLETE" not in missing.upper():
+                    missing_params_text = f"\n\nNote: Gentle alert to user that {missing} are missing but important for full fertility context."
+            except Exception: pass
             
-            search_query = f"Implications of fertility lab results: {lab_summary} for a couple undergoing {treatment_context}."
+            search_query = f"Fertility lab analysis: {lab_summary} for {treatment_context}."
             expanded_queries = [search_query]
         else:
-            # 1. STANDARD MULTI-QUERY
             try:
-                mq_prompt = f"Generate 2 alternative search queries to maximize medical document retrieval for: '{request.message}'. Return ONLY the 2 queries separated by a newline."
+                mq_prompt = f"Generate 2 medical search queries for: '{request.message}'."
                 mq_completion = groq_client.chat.completions.create(
                     messages=[{"role": "user", "content": mq_prompt}],
                     model="llama-3.1-8b-instant",
                     temperature=0.2
                 )
                 expanded_queries = [request.message] + [q.strip() for q in mq_completion.choices[0].message.content.split('\n') if q.strip()]
-                expanded_queries = expanded_queries[:3]
             except Exception:
                 expanded_queries = [request.message] 
 
-        # 2. EMBEDDING
         emb_resp = openai_client.embeddings.create(input=expanded_queries, model="text-embedding-ada-002")
         vectors = [item.embedding for item in emb_resp.data]
 
-        # 3. CACHE CHECK (Skip if personalized data)
         if not is_blood_work:
             cache_resp = index.query(namespace=CACHE_NAMESPACE, vector=vectors[0], top_k=1, include_metadata=True)
             if cache_resp.matches and cache_resp.matches[0].score > 0.95:
                 cached_meta = cache_resp.matches[0].metadata
-                try: cached_qs = json.loads(cached_meta.get("suggested_questions", "[]"))
-                except: cached_qs = []
-                return {
-                    "response": cached_meta["response"],
-                    "citations": ["Verified Community Answer"],
-                    "suggested_questions": cached_qs,
-                    "is_gap": False
-                }
+                return {"response": cached_meta["response"], "citations": ["Verified Community Answer"], "suggested_questions": json.loads(cached_meta.get("suggested_questions", "[]")), "is_gap": False}
 
-        # 4. RETRIEVAL
         unique_docs = {}
         for vec in vectors:
             search_resp = index.query(vector=vec, top_k=5, include_metadata=True)
@@ -167,79 +146,45 @@ async def chat_endpoint(request: ChatRequest, background_tasks: BackgroundTasks)
             txt = match.metadata.get('text', '')
             if txt not in doc_texts:
                 doc_texts.append(txt)
-                doc_sources.append(match.metadata.get('source', match.metadata.get('type', 'Medical Database')))
+                doc_sources.append(match.metadata.get('source', 'Medical Database'))
 
         context_text, citations, highest_score = "", [], 0.0
 
-        # 5. RERANKING & LOGGING CITED DOCUMENTS
-        try:
-            if cohere_client and doc_texts:
-                query_for_rerank = search_query if is_blood_work else request.message
-                rerank_resp = cohere_client.rerank(model="rerank-multilingual-v3.0", query=query_for_rerank, documents=doc_texts, top_n=4)
-                for r in rerank_resp.results:
-                    if r.relevance_score > highest_score: highest_score = r.relevance_score
-                    if r.relevance_score > 0.3:
-                        idx = r.index
-                        src = clean_citation(doc_sources[idx])
-                        context_text += f"Info from {src}: {doc_texts[idx]}\n\n"
-                        if src not in citations: 
-                            citations.append(src)
-                            # Log document usage
-                            background_tasks.add_task(save_log, DOC_USAGE_LOG_FILE, {"timestamp": datetime.now().isoformat(), "document": src})
-        except Exception:
-            sorted_matches = sorted(unique_docs.values(), key=lambda x: x.score, reverse=True)
-            highest_score = sorted_matches[0].score if sorted_matches else 0.0
-            for match in sorted_matches[:4]:
-                if match.score > 0.75:
-                    src = clean_citation(match.metadata.get("source", match.metadata.get('type', 'Medical Database')))
-                    context_text += f"Info from {src}: {match.metadata.get('text', '')}\n\n"
+        if cohere_client and doc_texts:
+            query_for_rerank = search_query if is_blood_work else request.message
+            rerank_resp = cohere_client.rerank(model="rerank-multilingual-v3.0", query=query_for_rerank, documents=doc_texts, top_n=4)
+            for r in rerank_resp.results:
+                if r.relevance_score > highest_score: highest_score = r.relevance_score
+                if r.relevance_score > 0.25:
+                    idx = r.index
+                    src = clean_citation(doc_sources[idx])
+                    context_text += f"Info from {src}: {doc_texts[idx]}\n\n"
                     if src not in citations: 
                         citations.append(src)
                         background_tasks.add_task(save_log, DOC_USAGE_LOG_FILE, {"timestamp": datetime.now().isoformat(), "document": src})
-
-        # GAP LOGGING
+        
         is_gap = highest_score < 0.3
         if is_gap:
-            gap_type = "Blood Work Gap" if is_blood_work else "General Gap"
-            gap_question = f"Missing context for labs: {lab_summary}" if is_blood_work else request.message
-            background_tasks.add_task(save_log, GAP_LOG_FILE, {"timestamp": datetime.now().isoformat(), "question": gap_question, "score": float(highest_score), "type": gap_type})
-            context_text += "Note: Specific medical data in the textbook was limited. Provide general medical insights based on LLM knowledge.\n"
+            background_tasks.add_task(save_log, GAP_LOG_FILE, {"timestamp": datetime.now().isoformat(), "question": search_query if is_blood_work else request.message, "score": float(highest_score), "type": "Blood Work Gap" if is_blood_work else "General Gap"})
 
-        # 6. DRAFT (70B) 
+        # --- DYNAMIC PROMOTION REDUCTION ---
+        promo_rule = ""
+        if request.interaction_count == 0:
+            promo_rule = "Encourage them to check Izana's personalized nutrition and lifestyle plans."
+        else:
+            promo_rule = "STRICT: Do NOT mention Izana plans or provide platform promotion. Focus purely on answering the question."
+
         if is_blood_work:
             draft_prompt = f"""
-            You are Izana AI, an empathetic and highly knowledgeable reproductive health assistant. 
-            Language: {request.language}.
-            
-            PATIENT PROFILE:
-            - Lab Results: {lab_summary}
-            - Planned Treatment: {treatment_context}
-            {missing_params_text}
-            
-            TASK:
-            1. Analyze these specific lab results in simple, comforting terms for a couple navigating fertility. Explain what the numbers generally mean for their reproductive health and their chosen treatment ({treatment_context}).
-            2. FOCUS ON FERTILITY. Even if general health markers are present, tie the explanation back to their reproductive journey.
-            3. PROVIDE INSIGHTS ONLY. Explicitly state you cannot diagnose.
-            4. ACTIONABLE LIFESTYLE: Conclude by actively encouraging them to utilize "Izana's personalized nutrition, exercise, and lifestyle modification plans" to help optimize these markers and improve their overall reproductive health.
-            
-            CRITICAL RULES:
-            - NO FIRST-PERSON PRONOUNS except when referring to Izana as a platform. Do not use "we", "our", or "I" as a doctor. Talk in the third person plural (e.g., "healthcare providers", "clinics").
-            - PLAIN TEXT ONLY. DO NOT use markdown, bold, or asterisks.
-            - Speak directly to the couple in a warm, encouraging tone.
-            
+            You are Izana AI. Context: simple, comforting couple-centric fertility lab analysis.
+            {promo_rule}
+            Target: {treatment_context}. Labs: {lab_summary}. {missing_params_text}
             CONTEXT: {context_text}
             """
         else:
             draft_prompt = f"""
-            You are Izana AI. Answer the following medical question based strictly on the CONTEXT. Language: {request.language}.
-            
-            CRITICAL RULES:
-            1. NO FIRST-PERSON PRONOUNS except when referring to Izana. Talk in the third person plural (e.g., "healthcare providers", "they").
-            2. NO EM-DASHES. Do not use —.
-            3. PLAIN TEXT ONLY. DO NOT use markdown, bold, or asterisks.
-            4. CONCISE: Be direct, informative, and empathetic. Do not loop or repeat yourself.
-            5. Where relevant, suggest checking out Izana's lifestyle, exercise, and nutrition tools.
-            
+            You are Izana AI. Answer strictly based on CONTEXT.
+            {promo_rule}
             CONTEXT: {context_text}
             """
 
@@ -247,68 +192,28 @@ async def chat_endpoint(request: ChatRequest, background_tasks: BackgroundTasks)
             messages=[{"role": "system", "content": draft_prompt}, {"role": "user", "content": request.message}],
             model="llama-3.3-70b-versatile",
             temperature=0.2,
-            max_tokens=850, 
-            frequency_penalty=0.4 
+            max_tokens=850
         )
         draft_response = draft_completion.choices[0].message.content
 
-        # 7. QC FORMATTER (8B) - NOW WITH IMPROVED FOLLOW-UP QUESTIONS
-        try:
-            qc_prompt = f"""
-            You are a JSON formatting tool. Read the DRAFT RESPONSE below.
-            Language: {request.language}.
-
-            TASK:
-            1. Keep the exact tone and content of the draft. STRICTLY use third-person ("healthcare providers", "they") unless referring to the Izana platform.
-            2. Remove any bullet points, asterisks (*), bold marks (**), or em-dashes (—). Plain text ONLY.
-            3. Break the text into short, easy-to-read paragraphs separated by double blank lines.
-            4. Generate 3 HIGH-QUALITY follow-up questions. These should NOT be generic FAQs. They must be natural, conversational next steps based exactly on what was just discussed (e.g., if you just discussed AMH, a follow up might be "How long does it take for diet to impact my AMH levels?"). Make them feel like a natural exploration.
-            5. CRITICAL: DO NOT repeat any sentences. Stop generating when the thought is complete.
-            
-            DRAFT RESPONSE:
-            {draft_response}
-
-            OUTPUT FORMAT:
-            Return ONLY a JSON object:
-            {{
-                "revised_response": "The plain text response here. A SINGLE STRING.",
-                "suggested_questions": ["Highly specific Q1", "Highly specific Q2", "Highly specific Q3"]
-            }}
-            """
-            qc_completion = groq_client.chat.completions.create(
-                messages=[{"role": "system", "content": qc_prompt}],
-                model="llama-3.1-8b-instant",
-                temperature=0.3,
-                max_tokens=650,
-                frequency_penalty=0.6, 
-                presence_penalty=0.2,
-                response_format={"type": "json_object"}
-            )
-            final_data = json.loads(qc_completion.choices[0].message.content)
-            
-            raw_response = final_data.get("revised_response", draft_response)
-            if isinstance(raw_response, list):
-                final_response = "\n\n".join([str(p) for p in raw_response])
-            elif isinstance(raw_response, dict):
-                final_response = "\n\n".join([str(v) for v in raw_response.values()])
-            else:
-                final_response = str(raw_response)
-                
-            final_response = final_response.replace("**", "").replace("*", "").replace("—", "-")
-                
-            suggested_questions = final_data.get("suggested_questions", [])
-            if not isinstance(suggested_questions, list):
-                suggested_questions = ["What are the next steps in this process?", "How does diet play a role?", "Can you explain the treatment options?"]
-
-        except Exception as e:
-            final_response = str(draft_response).replace("**", "").replace("*", "")
-            suggested_questions = ["What should I do next?", "How can I improve my lifestyle?", "What does this mean for my treatment?"]
-
+        qc_prompt = f"""
+        JSON formatting tool. Response language: {request.language}.
+        Task: 1. Third-person only. 2. Remove markdown/formatting. 3. Short paragraphs.
+        4. Generate 3 conversational follow-up questions relevant to: {draft_response}.
+        DRAFT: {draft_response}
+        """
+        qc_completion = groq_client.chat.completions.create(
+            messages=[{"role": "system", "content": qc_prompt}],
+            model="llama-3.1-8b-instant",
+            response_format={"type": "json_object"}
+        )
+        final_data = json.loads(qc_completion.choices[0].message.content)
+        
         return {
-            "response": final_response,
+            "response": final_data.get("revised_response", draft_response).replace("**", "").replace("*", "").replace("—", "-"),
             "citations": citations,
             "is_gap": is_gap,
-            "suggested_questions": suggested_questions
+            "suggested_questions": final_data.get("suggested_questions", [])
         }
 
     except Exception as e:
@@ -317,32 +222,21 @@ async def chat_endpoint(request: ChatRequest, background_tasks: BackgroundTasks)
 
 @router.post("/feedback")
 async def submit_feedback(feedback: FeedbackRequest, background_tasks: BackgroundTasks):
-    entry = {
-        "timestamp": datetime.now().isoformat(),
-        "rating": feedback.rating,
-        "question": feedback.question,
-        "reason": feedback.reason
-    }
+    entry = {"timestamp": datetime.now().isoformat(), "rating": feedback.rating, "question": feedback.question, "reason": feedback.reason}
     background_tasks.add_task(save_log, FEEDBACK_LOG_FILE, entry)
-
     if feedback.rating == 5:
         try:
             emb_resp = openai_client.embeddings.create(input=feedback.question, model="text-embedding-ada-002")
-            vector = emb_resp.data[0].embedding
-            index.upsert(
-                vectors=[{"id": str(uuid.uuid4()), "values": vector, "metadata": {"question": feedback.question, "response": feedback.answer, "suggested_questions": json.dumps(feedback.suggested_questions)}}],
-                namespace=CACHE_NAMESPACE
-            )
-        except Exception:
-            pass
+            index.upsert(vectors=[{"id": str(uuid.uuid4()), "values": emb_resp.data[0].embedding, "metadata": {"question": feedback.question, "response": feedback.answer, "suggested_questions": json.dumps(feedback.suggested_questions)}}], namespace=CACHE_NAMESPACE)
+        except Exception: pass
     return {"status": "Recorded"}
 
 @router.get("/admin/stats")
 async def get_stats():
-    gaps, feedback = [], []
-    for log_file, target_list in [(GAP_LOG_FILE, gaps), (FEEDBACK_LOG_FILE, feedback)]:
+    gaps, feedback, usage = [], [], []
+    for log_file, target_list in [(GAP_LOG_FILE, gaps), (FEEDBACK_LOG_FILE, feedback), (DOC_USAGE_LOG_FILE, usage)]:
         if os.path.exists(log_file):
             with open(log_file) as f: 
                 try: target_list.extend(json.load(f))
                 except: pass
-    return {"gaps": gaps, "feedback": feedback}
+    return {"gaps": gaps, "feedback": feedback, "doc_usage": usage}
