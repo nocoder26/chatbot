@@ -4,6 +4,7 @@ import uuid
 import traceback
 import re
 from datetime import datetime, timedelta
+from typing import Optional, List, Dict, Any
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from pinecone import Pinecone
@@ -34,6 +35,9 @@ except Exception as e:
 class ChatRequest(BaseModel):
     message: str
     language: str = "English"
+    # NEW: Added fields for blood work analysis
+    clinical_data: Optional[Dict[str, Any]] = None
+    treatment: Optional[str] = None
 
 class FeedbackRequest(BaseModel):
     question: str
@@ -87,52 +91,56 @@ async def chat_endpoint(request: ChatRequest, background_tasks: BackgroundTasks)
     background_tasks.add_task(cleanup_logs)
 
     try:
-        # 1. MULTI-QUERY
-        try:
-            mq_prompt = f"Generate 2 alternative search queries to maximize medical document retrieval for: '{request.message}'. Return ONLY the 2 queries separated by a newline."
-            mq_completion = groq_client.chat.completions.create(
-                messages=[{"role": "user", "content": mq_prompt}],
-                model="llama-3.1-8b-instant",
-                temperature=0.2
-            )
-            expanded_queries = [request.message] + [q.strip() for q in mq_completion.choices[0].message.content.split('\n') if q.strip()]
-            expanded_queries = expanded_queries[:3]
-        except Exception:
-            expanded_queries = [request.message] 
+        # --- NEW: BLOOD WORK ANALYSIS BRANCH ---
+        is_blood_work = request.clinical_data is not None
+        
+        if is_blood_work:
+            # Format the lab results into a readable string for the embedding
+            lab_results = request.clinical_data.get("results", [])
+            lab_summary = ", ".join([f"{r.get('name')}: {r.get('value')} {r.get('unit')}" for r in lab_results])
+            treatment_context = request.treatment or "General Fertility"
+            
+            # Create a specific search query based on their labs and treatment
+            search_query = f"What are the implications of these lab results: {lab_summary} for a patient undergoing {treatment_context}?"
+            expanded_queries = [search_query]
+        else:
+            # 1. STANDARD MULTI-QUERY
+            try:
+                mq_prompt = f"Generate 2 alternative search queries to maximize medical document retrieval for: '{request.message}'. Return ONLY the 2 queries separated by a newline."
+                mq_completion = groq_client.chat.completions.create(
+                    messages=[{"role": "user", "content": mq_prompt}],
+                    model="llama-3.1-8b-instant",
+                    temperature=0.2
+                )
+                expanded_queries = [request.message] + [q.strip() for q in mq_completion.choices[0].message.content.split('\n') if q.strip()]
+                expanded_queries = expanded_queries[:3]
+            except Exception:
+                expanded_queries = [request.message] 
 
         # 2. EMBEDDING
         emb_resp = openai_client.embeddings.create(input=expanded_queries, model="text-embedding-ada-002")
         vectors = [item.embedding for item in emb_resp.data]
 
-        # 3. CACHE CHECK
-        cache_resp = index.query(namespace=CACHE_NAMESPACE, vector=vectors[0], top_k=1, include_metadata=True)
-        if cache_resp.matches and cache_resp.matches[0].score > 0.95:
-            cached_meta = cache_resp.matches[0].metadata
-            try: cached_qs = json.loads(cached_meta.get("suggested_questions", "[]"))
-            except: cached_qs = []
-            return {
-                "response": cached_meta["response"],
-                "citations": ["Verified Community Answer"],
-                "suggested_questions": cached_qs,
-                "is_gap": False
-            }
+        # 3. CACHE CHECK (Skip cache if it's personalized blood work)
+        if not is_blood_work:
+            cache_resp = index.query(namespace=CACHE_NAMESPACE, vector=vectors[0], top_k=1, include_metadata=True)
+            if cache_resp.matches and cache_resp.matches[0].score > 0.95:
+                cached_meta = cache_resp.matches[0].metadata
+                try: cached_qs = json.loads(cached_meta.get("suggested_questions", "[]"))
+                except: cached_qs = []
+                return {
+                    "response": cached_meta["response"],
+                    "citations": ["Verified Community Answer"],
+                    "suggested_questions": cached_qs,
+                    "is_gap": False
+                }
 
-        # 4. RETRIEVAL (TEXTBOOKS)
+        # 4. RETRIEVAL (TEXTBOOKS ONLY)
         unique_docs = {}
         for vec in vectors:
-            search_resp = index.query(vector=vec, top_k=4, include_metadata=True)
+            search_resp = index.query(vector=vec, top_k=5, include_metadata=True)
             for match in search_resp.matches:
                 unique_docs[match.id] = match
-                
-        # 4B. CLINICAL CASE RETRIEVAL (VERIFIED DATA ONLY)
-        # Search the verified clinical cases so the bot can use real patient data
-        for vec in vectors:
-            try:
-                clin_resp = index.query(vector=vec, top_k=2, include_metadata=True, namespace="clinical-cases-verified")
-                for match in clin_resp.matches:
-                    unique_docs[match.id] = match
-            except Exception:
-                pass
 
         doc_texts, doc_sources = [], []
         for match in unique_docs.values():
@@ -146,7 +154,8 @@ async def chat_endpoint(request: ChatRequest, background_tasks: BackgroundTasks)
         # 5. RERANKING
         try:
             if cohere_client and doc_texts:
-                rerank_resp = cohere_client.rerank(model="rerank-multilingual-v3.0", query=request.message, documents=doc_texts, top_n=4)
+                query_for_rerank = search_query if is_blood_work else request.message
+                rerank_resp = cohere_client.rerank(model="rerank-multilingual-v3.0", query=query_for_rerank, documents=doc_texts, top_n=4)
                 for r in rerank_resp.results:
                     if r.relevance_score > highest_score: highest_score = r.relevance_score
                     if r.relevance_score > 0.3:
@@ -163,30 +172,54 @@ async def chat_endpoint(request: ChatRequest, background_tasks: BackgroundTasks)
                     context_text += f"Info from {src}: {match.metadata.get('text', '')}\n\n"
                     if src not in citations: citations.append(src)
 
+        # GAP LOGGING
         is_gap = highest_score < 0.3
         if is_gap:
-            background_tasks.add_task(save_log, GAP_LOG_FILE, {"timestamp": datetime.now().isoformat(), "question": request.message, "score": float(highest_score), "type": "Gap"})
-            context_text += "Note: Medical database limited. Use general medical knowledge.\n"
+            gap_type = "Blood Work Gap" if is_blood_work else "General Gap"
+            gap_question = f"Missing context for labs: {lab_summary}" if is_blood_work else request.message
+            background_tasks.add_task(save_log, GAP_LOG_FILE, {"timestamp": datetime.now().isoformat(), "question": gap_question, "score": float(highest_score), "type": gap_type})
+            context_text += "Note: Specific medical data in the textbook was limited. Provide general medical insights based on LLM knowledge.\n"
 
         # 6. DRAFT (70B) 
-        draft_prompt = f"""
-        Answer the following medical question based strictly on the CONTEXT. Language: {request.language}.
-        
-        CRITICAL RULES:
-        1. NO FIRST-PERSON PRONOUNS. Do not use "we", "our", "us", or "I". Talk in the third person plural (e.g., "healthcare providers", "clinics", "they").
-        2. NO EM-DASHES. Do not use —.
-        3. PLAIN TEXT ONLY. DO NOT use markdown, bold, or asterisks.
-        4. NO CANCER MENTIONS unless explicitly asked.
-        5. CONCISE: Be direct. Do not loop or repeat yourself.
-        
-        CONTEXT: {context_text}
-        """
+        if is_blood_work:
+            draft_prompt = f"""
+            You are an empathetic reproductive health assistant. Language: {request.language}.
+            
+            PATIENT PROFILE:
+            - Lab Results: {lab_summary}
+            - Planned Treatment: {treatment_context}
+            
+            TASK:
+            1. Analyze what these specific lab results mean in the context of their planned treatment based on the provided CONTEXT.
+            2. PROVIDE INSIGHTS ONLY. Explicitly state you cannot diagnose.
+            3. Actionable Steps: Suggest 2-3 lifestyle modifications (diet, exercise, stress) that generally improve reproductive health for this profile.
+            
+            CRITICAL RULES:
+            - NO FIRST-PERSON PRONOUNS. Talk in the third person plural (e.g., "healthcare providers", "clinics", "they").
+            - PLAIN TEXT ONLY. DO NOT use markdown, bold, or asterisks.
+            - CONCISE: Be direct and supportive.
+            
+            CONTEXT: {context_text}
+            """
+        else:
+            draft_prompt = f"""
+            Answer the following medical question based strictly on the CONTEXT. Language: {request.language}.
+            
+            CRITICAL RULES:
+            1. NO FIRST-PERSON PRONOUNS. Do not use "we", "our", "us", or "I". Talk in the third person plural (e.g., "healthcare providers", "they").
+            2. NO EM-DASHES. Do not use —.
+            3. PLAIN TEXT ONLY. DO NOT use markdown, bold, or asterisks.
+            4. CONCISE: Be direct. Do not loop or repeat yourself.
+            
+            CONTEXT: {context_text}
+            """
+
         draft_completion = groq_client.chat.completions.create(
             messages=[{"role": "system", "content": draft_prompt}, {"role": "user", "content": request.message}],
             model="llama-3.3-70b-versatile",
             temperature=0.2,
-            max_tokens=600, # Prevents runaway generation
-            frequency_penalty=0.4 # PREVENTS REPETITION LOOPS
+            max_tokens=800, 
+            frequency_penalty=0.4 
         )
         draft_response = draft_completion.choices[0].message.content
 
@@ -200,7 +233,7 @@ async def chat_endpoint(request: ChatRequest, background_tasks: BackgroundTasks)
             1. Keep the exact tone of the draft. STRICTLY use third-person ("healthcare providers", "they").
             2. Remove any bullet points, asterisks (*), bold marks (**), or em-dashes (—). Plain text ONLY.
             3. Break the text into short, easy-to-read paragraphs separated by double blank lines.
-            4. Generate 3 clickable leading questions.
+            4. Generate 3 clickable leading questions relevant to the text.
             5. CRITICAL: DO NOT repeat any sentences. Stop generating when the thought is complete.
             
             DRAFT RESPONSE:
@@ -218,7 +251,7 @@ async def chat_endpoint(request: ChatRequest, background_tasks: BackgroundTasks)
                 model="llama-3.1-8b-instant",
                 temperature=0.3,
                 max_tokens=600,
-                frequency_penalty=0.6, # STRICTLY PREVENTS REPETITION LOOPS
+                frequency_penalty=0.6, 
                 presence_penalty=0.2,
                 response_format={"type": "json_object"}
             )
