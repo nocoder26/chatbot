@@ -117,19 +117,29 @@ async def chat_endpoint(request: ChatRequest, background_tasks: BackgroundTasks)
                 "is_gap": False
             }
 
-        # 4. RETRIEVAL
+        # 4. RETRIEVAL (TEXTBOOKS)
         unique_docs = {}
         for vec in vectors:
             search_resp = index.query(vector=vec, top_k=4, include_metadata=True)
             for match in search_resp.matches:
                 unique_docs[match.id] = match
                 
+        # 4B. CLINICAL CASE RETRIEVAL (VERIFIED DATA ONLY)
+        # Search the verified clinical cases so the bot can use real patient data
+        for vec in vectors:
+            try:
+                clin_resp = index.query(vector=vec, top_k=2, include_metadata=True, namespace="clinical-cases-verified")
+                for match in clin_resp.matches:
+                    unique_docs[match.id] = match
+            except Exception:
+                pass
+
         doc_texts, doc_sources = [], []
         for match in unique_docs.values():
             txt = match.metadata.get('text', '')
             if txt not in doc_texts:
                 doc_texts.append(txt)
-                doc_sources.append(match.metadata.get('source', 'Medical Database'))
+                doc_sources.append(match.metadata.get('source', match.metadata.get('type', 'Medical Database')))
 
         context_text, citations, highest_score = "", [], 0.0
 
@@ -149,7 +159,7 @@ async def chat_endpoint(request: ChatRequest, background_tasks: BackgroundTasks)
             highest_score = sorted_matches[0].score if sorted_matches else 0.0
             for match in sorted_matches[:4]:
                 if match.score > 0.75:
-                    src = clean_citation(match.metadata.get("source", "Medical Database"))
+                    src = clean_citation(match.metadata.get("source", match.metadata.get('type', 'Medical Database')))
                     context_text += f"Info from {src}: {match.metadata.get('text', '')}\n\n"
                     if src not in citations: citations.append(src)
 
