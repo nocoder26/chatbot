@@ -109,3 +109,37 @@ async def download_database():
         filename="chatbot.db",
         media_type="application/octet-stream",
     )
+    import os
+from pinecone import Pinecone
+
+# Initialize a local Pinecone client specifically for the admin router
+# (Using os.getenv ensures we grab the keys from Railway/Vercel)
+pc_admin = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
+
+@router.get("/pending-clinical")
+async def get_pending_clinical():
+    """Fetches the 20 synthetic/unverified cases from Pinecone staging."""
+    try:
+        # Connect to your 1536-dim index
+        idx = pc_admin.Index("reproductive-health")
+        
+        # Query with a zero-vector to list the namespace contents
+        results = idx.query(
+            vector=[0.0] * 1536, 
+            top_k=20, 
+            include_metadata=True, 
+            namespace="clinical-cases-staging"
+        )
+        
+        return {
+            "cases": [
+                {
+                    "id": m.id,
+                    "text": m.metadata.get("text", "No clinical summary available"),
+                    "scenario": m.metadata.get("scenario", "System Generated"),
+                    "score": m.score
+                } for m in results.matches
+            ]
+        }
+    except Exception as e:
+        return {"cases": [], "error": str(e)}
