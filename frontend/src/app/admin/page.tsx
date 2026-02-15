@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
-import { Lock, AlertTriangle, MessageSquare, LogOut, RefreshCw, BarChart3, Star, TestTube } from "lucide-react";
+import { Lock, AlertTriangle, MessageSquare, LogOut, RefreshCw, BarChart3, Star, TestTube, BookOpen } from "lucide-react";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 const ADMIN_PIN = "1234";
@@ -63,8 +63,9 @@ function PinEntry({ onSuccess }: { onSuccess: () => void }) {
 }
 
 function Dashboard() {
-  const [activeTab, setActiveTab] = useState<"gaps" | "feedback">("gaps");
-  const [stats, setStats] = useState<any>({ gaps: [], feedback: [] });
+  // Added "documents" to the active tab states
+  const [activeTab, setActiveTab] = useState<"gaps" | "feedback" | "documents">("gaps");
+  const [stats, setStats] = useState<any>({ gaps: [], feedback: [], doc_usage: [] });
   const [loading, setLoading] = useState(true);
 
   const fetchStats = async () => {
@@ -76,7 +77,8 @@ function Dashboard() {
         const data = await response.json();
         setStats({
           gaps: data.gaps || [],
-          feedback: data.feedback || []
+          feedback: data.feedback || [],
+          doc_usage: data.doc_usage || [] // NEW: Capture document usage data
         });
       }
     } catch (err) { 
@@ -88,7 +90,9 @@ function Dashboard() {
 
   useEffect(() => { fetchStats(); }, []);
 
-  // Calculate Chart Data
+  // --- DATA AGGREGATION ---
+
+  // 1. Calculate Chart Data for Sentiment
   const ratingCounts = [0, 0, 0, 0, 0];
   stats.feedback.forEach((f: any) => {
     if (f.rating >= 1 && f.rating <= 5) ratingCounts[f.rating - 1]++;
@@ -97,6 +101,17 @@ function Dashboard() {
   const avgRating = stats.feedback.length 
     ? (stats.feedback.reduce((a: number, b: any) => a + b.rating, 0) / stats.feedback.length).toFixed(1) 
     : "0.0";
+
+  // 2. Aggregate Document Usage Counts
+  // Transforms the raw chronological logs into a tallied dictionary: {"Doc A": 5, "Doc B": 2}
+  const docCounts: Record<string, number> = {};
+  stats.doc_usage.forEach((log: any) => {
+    const docName = log.document || "Unknown Document";
+    docCounts[docName] = (docCounts[docName] || 0) + 1;
+  });
+  
+  // Convert the dictionary into an array and sort it from most used to least used
+  const sortedDocs = Object.entries(docCounts).sort((a, b) => b[1] - a[1]);
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-900">
@@ -148,17 +163,21 @@ function Dashboard() {
 
         {/* TABS */}
         <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm overflow-hidden border border-slate-200 dark:border-slate-700">
-          <div className="flex border-b border-slate-200 dark:border-slate-700">
-            <button onClick={() => setActiveTab("gaps")} className={`flex-1 px-6 py-4 text-sm font-medium transition-colors ${activeTab === "gaps" ? "text-red-600 border-b-2 border-red-600 bg-red-50 dark:bg-red-900/10" : "text-slate-500"}`}>
+          <div className="flex border-b border-slate-200 dark:border-slate-700 overflow-x-auto">
+            <button onClick={() => setActiveTab("gaps")} className={`flex-1 px-6 py-4 text-sm font-medium transition-colors whitespace-nowrap ${activeTab === "gaps" ? "text-red-600 border-b-2 border-red-600 bg-red-50 dark:bg-red-900/10" : "text-slate-500"}`}>
               🔴 Knowledge Gaps
             </button>
-            <button onClick={() => setActiveTab("feedback")} className={`flex-1 px-6 py-4 text-sm font-medium transition-colors ${activeTab === "feedback" ? "text-teal-600 border-b-2 border-teal-600 bg-teal-50 dark:bg-teal-900/10" : "text-slate-500"}`}>
+            <button onClick={() => setActiveTab("documents")} className={`flex-1 px-6 py-4 text-sm font-medium transition-colors whitespace-nowrap ${activeTab === "documents" ? "text-indigo-600 border-b-2 border-indigo-600 bg-indigo-50 dark:bg-indigo-900/10" : "text-slate-500"}`}>
+              📚 Document Usage
+            </button>
+            <button onClick={() => setActiveTab("feedback")} className={`flex-1 px-6 py-4 text-sm font-medium transition-colors whitespace-nowrap ${activeTab === "feedback" ? "text-teal-600 border-b-2 border-teal-600 bg-teal-50 dark:bg-teal-900/10" : "text-slate-500"}`}>
               💬 User Feedback
             </button>
           </div>
 
           <div className="overflow-x-auto p-2">
-            {activeTab === "gaps" ? (
+            {/* KNOWLEDGE GAPS VIEW */}
+            {activeTab === "gaps" && (
               <table className="w-full">
                 <thead className="bg-slate-50 dark:bg-slate-700/50">
                   <tr>
@@ -192,7 +211,38 @@ function Dashboard() {
                   )}
                 </tbody>
               </table>
-            ) : (
+            )}
+
+            {/* DOCUMENT USAGE VIEW */}
+            {activeTab === "documents" && (
+              <table className="w-full">
+                <thead className="bg-slate-50 dark:bg-slate-700/50">
+                  <tr>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase">Knowledge Base Source (PDF/Doc)</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase w-32">Times Cited</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-200 dark:divide-slate-700">
+                  {sortedDocs.map(([docName, count], i) => (
+                    <tr key={i} className="hover:bg-slate-50 dark:hover:bg-slate-800">
+                      <td className="px-6 py-4 text-sm font-medium text-slate-800 dark:text-slate-200 flex items-center gap-2">
+                        <BookOpen className="w-4 h-4 text-indigo-400" />
+                        {docName}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-indigo-600 dark:text-indigo-400 font-bold">
+                        {count} {count === 1 ? 'time' : 'times'}
+                      </td>
+                    </tr>
+                  ))}
+                  {sortedDocs.length === 0 && (
+                    <tr><td colSpan={2} className="p-8 text-center text-slate-400">No documents have been cited yet.</td></tr>
+                  )}
+                </tbody>
+              </table>
+            )}
+
+            {/* USER FEEDBACK VIEW */}
+            {activeTab === "feedback" && (
               <table className="w-full">
                 <thead className="bg-slate-50 dark:bg-slate-700/50">
                   <tr>
