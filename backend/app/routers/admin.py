@@ -5,17 +5,19 @@ from fastapi.responses import FileResponse
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
+# --- TRACKING FILES ---
 GAP_LOG_FILE = "/tmp/gap_logs.json"
 FEEDBACK_LOG_FILE = "/tmp/feedback_logs.json"
+DOC_USAGE_LOG_FILE = "/tmp/doc_usage_logs.json" # NEW: For tracking cited documents
 
 @router.get("/stats")
 async def get_stats():
     """
-    Get admin statistics including gaps and feedback logs natively from the JSON tracking files.
+    Get admin statistics including gaps, feedback, and document usage logs natively from JSON tracking files.
     """
-    gaps, feedback = [], []
+    gaps, feedback, doc_usage = [], [], []
     
-    # Fetch Knowledge Gaps
+    # 1. Fetch Knowledge Gaps
     try:
         if os.path.exists(GAP_LOG_FILE):
             with open(GAP_LOG_FILE, "r") as f:
@@ -25,7 +27,7 @@ async def get_stats():
     except Exception as e:
         print(f"Error reading gap logs: {e}")
         
-    # Fetch User Feedback
+    # 2. Fetch User Feedback
     try:
         if os.path.exists(FEEDBACK_LOG_FILE):
             with open(FEEDBACK_LOG_FILE, "r") as f:
@@ -34,10 +36,21 @@ async def get_stats():
                     feedback = json.loads(content)
     except Exception as e:
         print(f"Error reading feedback logs: {e}")
+
+    # 3. Fetch Document Usage (NEW)
+    try:
+        if os.path.exists(DOC_USAGE_LOG_FILE):
+            with open(DOC_USAGE_LOG_FILE, "r") as f:
+                content = f.read()
+                if content:
+                    doc_usage = json.loads(content)
+    except Exception as e:
+        print(f"Error reading doc usage logs: {e}")
         
     return {
         "gaps": gaps,
-        "feedback": feedback
+        "feedback": feedback,
+        "doc_usage": doc_usage
     }
 
 @router.get("/download_db")
