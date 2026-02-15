@@ -177,7 +177,8 @@ export default function ChatPage() {
 
     setIsLoading(true);
     const formData = new FormData();
-    formData.append('file', file);
+    // THE FIX: Appending the filename ensures FastAPI knows how to parse it
+    formData.append('file', file, file.name); 
 
     try {
       const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/analyze-bloodwork`, {
@@ -185,7 +186,14 @@ export default function ChatPage() {
         body: formData,
       });
       const data = await res.json();
-      setVerificationData(data); // Show verification overlay
+      
+      // Handle the custom error thrown by the Python PDF parser if no text is found
+      if (data.error) {
+         setMessages(prev => [...prev, { id: Date.now(), type: "bot", content: data.error, isAnimating: false }]);
+      } else {
+         setVerificationData(data); // Show verification overlay
+      }
+      
     } catch (err) {
       setMessages(prev => [...prev, { id: Date.now(), type: "bot", content: "Could not read the PDF report. Please try a different file.", isAnimating: false }]);
     } finally {
