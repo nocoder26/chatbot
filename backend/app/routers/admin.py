@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
+from pinecone import Pinecone
 
 from app.database import get_db
 from app.models import ChatLog, Feedback
@@ -109,19 +110,22 @@ async def download_database():
         filename="chatbot.db",
         media_type="application/octet-stream",
     )
-    import os
-from pinecone import Pinecone
 
-# Initialize a local Pinecone client specifically for the admin router
-# (Using os.getenv ensures we grab the keys from Railway/Vercel)
-pc_admin = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
 
 @router.get("/pending-clinical")
 async def get_pending_clinical():
-    """Fetches the 20 synthetic/unverified cases from Pinecone staging."""
+    """Fetches the synthetic/unverified cases from Pinecone staging."""
     try:
-        # Connect to your 1536-dim index
-        idx = pc_admin.Index("reproductive-health")
+        # Connect to Pinecone INSIDE the function (Crash-proof)
+        api_key = os.getenv("PINECONE_API_KEY")
+        if not api_key:
+            return {"cases": [], "error": "Missing Pinecone API Key in backend"}
+            
+        pc_admin = Pinecone(api_key=api_key)
+        
+        # Use your index name
+        index_name = os.getenv("PINECONE_INDEX_NAME", "reproductive-health")
+        idx = pc_admin.Index(index_name)
         
         # Query with a zero-vector to list the namespace contents
         results = idx.query(
@@ -142,4 +146,5 @@ async def get_pending_clinical():
             ]
         }
     except Exception as e:
+        print(f"Admin Route Error: {str(e)}")
         return {"cases": [], "error": str(e)}
