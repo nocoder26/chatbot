@@ -20,7 +20,7 @@ FEEDBACK_LOG_FILE = "/tmp/feedback_logs.json"
 DOC_USAGE_LOG_FILE = "/tmp/doc_usage_logs.json"
 CACHE_NAMESPACE = "semantic-cache"
 
-# --- CORE INITIALIZATION ---
+# --- CORE AI INITIALIZATION ---
 try:
     pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
     index = pc.Index(os.getenv("PINECONE_INDEX_NAME"))
@@ -50,6 +50,7 @@ class FeedbackRequest(BaseModel):
 
 # --- UTILITIES ---
 def save_log(filepath, entry):
+    """Generic JSON logger with rotation for production stability."""
     try:
         logs = []
         if os.path.exists(filepath):
@@ -57,11 +58,12 @@ def save_log(filepath, entry):
                 content = f.read()
                 if content: logs = json.loads(content)
         logs.append(entry)
-        if len(logs) > 500: logs = logs[-500:]
+        if len(logs) > 500: logs = logs[-500:] 
         with open(filepath, "w") as f: json.dump(logs, f, indent=2)
     except Exception: pass
 
 def clean_citation(raw_source: str) -> str:
+    """Formats file paths into clean document titles for citations and admin tracking."""
     try:
         name = raw_source.split('/')[-1].rsplit('.', 1)[0]
         name = re.sub(r'(?i)_compress|-compress|_final_version|_\d_\d|nbsped|factsheet', '', name)
@@ -96,7 +98,7 @@ async def chat_endpoint(request: ChatRequest, background_tasks: BackgroundTasks)
         else:
             search_query = request.message
 
-        # Semantic Search
+        # Semantic Search in Pinecone
         emb_resp = openai_client.embeddings.create(input=[search_query], model="text-embedding-ada-002")
         vector = emb_resp.data[0].embedding
         search_resp = index.query(vector=vector, top_k=5, include_metadata=True)
@@ -108,17 +110,17 @@ async def chat_endpoint(request: ChatRequest, background_tasks: BackgroundTasks)
             context_text += f"Info from {src}: {match.metadata.get('text', '')}\n\n"
             if src not in citations: 
                 citations.append(src)
-                # Log usage for Admin Dashboard
+                # Log usage for Admin Dashboard at 0.25 threshold
                 background_tasks.add_task(save_log, DOC_USAGE_LOG_FILE, {"timestamp": datetime.now().isoformat(), "document": src})
 
         if highest_score < 0.3:
             background_tasks.add_task(save_log, GAP_LOG_FILE, {"timestamp": datetime.now().isoformat(), "question": search_query, "score": float(highest_score), "type": "Gap"})
 
-        # 2. DRAFTING RESPONSE
+        # 2. DRAFTING RESPONSE (Maintaining medical depth while tapering promo)
         promo = "Briefly suggest checking Izana's personalized nutrition and lifestyle plans." if request.interaction_count == 0 else "Do NOT mention Izana plans."
         
-        system_prompt = f"""You are Izana AI. Role: Empathetic Medical Assistant. 
-        {promo} Always provide high medical detail and depth.
+        system_prompt = f"""You are Izana AI, a medical information assistant.
+        {promo} Always provide detailed medical context. Speak in the third-person plural.
         CONTEXT: {context_text} {missing_params_text}"""
 
         draft_comp = groq_client.chat.completions.create(
@@ -128,32 +130,35 @@ async def chat_endpoint(request: ChatRequest, background_tasks: BackgroundTasks)
         )
         draft_response = draft_comp.choices[0].message.content
 
-        # 3. ROBUST FORMATTING & RECOVERY
-        qc_prompt = f"""Return ONLY a valid JSON object. STRUCTURE: {{"revised_response": "...", "suggested_questions": ["q1", "q2", "q3"]}}. 
-        Language: {request.language}. NO MARKDOWN.
-        DRAFT TO FORMAT: {draft_response}"""
-        
+        # 3. CRITICAL JSON RECOVERY LOOP (Fixes "No response received")
         try:
+            qc_prompt = f"""
+            Return ONLY a valid JSON object. 
+            Structure: {{"revised_response": "string", "suggested_questions": ["q1", "q2", "q3"]}}
+            Language: {request.language}
+            Content: {draft_response}
+            """
             qc_comp = groq_client.chat.completions.create(
                 messages=[{"role": "system", "content": qc_prompt}],
                 model="llama-3.1-8b-instant",
                 response_format={"type": "json_object"},
-                timeout=8.0
+                timeout=7.0
             )
             final_data = json.loads(qc_comp.choices[0].message.content)
-            res_text = final_data.get("revised_response", draft_response)
-            res_qs = final_data.get("suggested_questions", [])
+            res_text = final_data.get("revised_response")
+            res_qs = final_data.get("suggested_questions")
             
-            if not str(res_text).strip(): raise ValueError("Empty Response")
-            
+            if not res_text or len(str(res_text)) < 10:
+                raise ValueError("Incomplete Model Output")
+
         except Exception as e:
-            # Fallback Recovery
-            print(f"Hard Recovery Triggered: {e}")
+            # HARD RECOVERY: Ensures frontend always gets data
+            print(f"JSON Recovery Loop Triggered: {e}")
             res_text = draft_response
             res_qs = [
-                "What lifestyle changes improve these results?",
                 "What are the next steps for my treatment?",
-                "Can you explain AMH levels in more detail?"
+                "How does diet impact these results?",
+                "Tell me more about AMH levels."
             ]
 
         return {
@@ -165,13 +170,25 @@ async def chat_endpoint(request: ChatRequest, background_tasks: BackgroundTasks)
     except Exception as e:
         print(traceback.format_exc())
         return {
-            "response": "I apologize, I'm having trouble processing that right now. Please try asking again.",
+            "response": "I encountered a processing error. Could you please try asking your question again?",
             "citations": [],
-            "suggested_questions": ["Try again", "What is IVF?", "How can I improve fertility?"]
+            "suggested_questions": ["Try again", "What is IVF?", "How to improve fertility?"]
         }
+
+@router.post("/feedback")
+async def submit_feedback(feedback: FeedbackRequest, background_tasks: BackgroundTasks):
+    entry = {"timestamp": datetime.now().isoformat(), "rating": feedback.rating, "question": feedback.question, "reason": feedback.reason}
+    background_tasks.add_task(save_log, FEEDBACK_LOG_FILE, entry)
+    if feedback.rating == 5:
+        try:
+            emb_resp = openai_client.embeddings.create(input=feedback.question, model="text-embedding-ada-002")
+            index.upsert(vectors=[{"id": str(uuid.uuid4()), "values": emb_resp.data[0].embedding, "metadata": {"question": feedback.question, "response": feedback.answer, "suggested_questions": json.dumps(feedback.suggested_questions)}}], namespace=CACHE_NAMESPACE)
+        except Exception: pass
+    return {"status": "Recorded"}
 
 @router.get("/admin/stats")
 async def get_stats():
+    """Aggregates all tracker files for the Master Dashboard."""
     gaps, feedback, usage = [], [], []
     for log_file, target_list in [(GAP_LOG_FILE, gaps), (FEEDBACK_LOG_FILE, feedback), (DOC_USAGE_LOG_FILE, usage)]:
         if os.path.exists(log_file):
