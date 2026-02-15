@@ -11,3 +11,4 @@ cohere==5.6.1
 sqlalchemy>=2.0.0
 pinecone-client>=3.1.0
 requests
+pypdf>=4.0.0
