@@ -30,7 +30,7 @@ const TRANSLATIONS: any = {
   hi: { morning: "सुप्रभात", afternoon: "नमस्कार", evening: "शुभ संध्या", topics: "विषय", placeholder: "प्रश्न लिखें...", disclaimer: "Izana AI निदान प्रदान नहीं करता है।", rate: "मूल्यांकन करें", feedback_prompt: "क्या कमी थी?", feedback_thanks: "धन्यवाद!", shadow: "पूछें: \"IVF सफलता दर कैसे बढ़ाएं?\"", suggested: "आगे जानें:", t_bloodwork: "रक्त परीक्षण समझें", t_bloodwork_q: "I want to understand my blood work.", bw_intro: "मैं आपके रक्त परीक्षण का विश्लेषण कर सकता हूँ..." },
   ta: { morning: "காலை வணக்கம்", afternoon: "மதிய வணக்கம்", evening: "மாலை வணக்கம்", topics: "தலைப்புகள்", placeholder: "கேட்கவும்...", disclaimer: "Izana AI நோயறிதலை வழங்காது.", rate: "மதிப்பிடவும்", feedback_prompt: "என்ன குறை?", feedback_thanks: "நன்றி!", shadow: "கேட்கவும்: \"வெற்றி விகிதத்தை கூட்டுவது எப்படி?\"", suggested: "மேலும் ஆராய:", t_bloodwork: "இரத்த பரிசோதனையை புரிந்து கொள்ளுங்கள்", t_bloodwork_q: "I want to understand my blood work.", bw_intro: "நான் உங்கள் இரத்த பரிசோதனையை பகுப்பாய்வு செய்யலாம்..." },
   te: { morning: "శుభోదయం", afternoon: "శుభ మధ్యాహ్నం", evening: "శుభ సాయంత్రం", topics: "అంశాలు", placeholder: "ప్రశ్న...", disclaimer: "Izana AI రోగనిర్ధారణ అందించదు.", rate: "రేట్ చేయండి", feedback_prompt: "లోపం ఏమిటి?", feedback_thanks: "ధన్యవాదాలు!", shadow: "ప్రయత్నించండి: \"IVF విజయం ఎలా?\"", suggested: "మరింత అన్వేషించండి:", t_bloodwork: "రక్త పరీక్షను అర్థం చేసుకోండి", t_bloodwork_q: "I want to understand my blood work.", bw_intro: "నేను మీ రక్త పరీక్షను విశ్లేషించగలను..." },
-  ml: { morning: "സുപ്രഭാതം", afternoon: "ഗുഡ് ആഫ്റ്റർനൂൺ", evening: "ശുഭ സായാഹ്നം", topics: "വിഷയങ്ങൾ", placeholder: "ചോദിക്കൂ...", disclaimer: "Izana AI രോഗനിർണയം നൽകുന്നില്ല.", rate: "വിലയിരുത്തുക", feedback_prompt: "എന്താണ് കുറവ്?", feedback_thanks: "നന്ദി!", shadow: "ചോദിക്കുക: \"വിജയസാധ്യത എങ്ങനെ കൂട്ടാം?\"", suggested: "കൂടുതൽ അറിയുക:", t_bloodwork: "രക്തപരിശോധന മനസ്സിലാക്കുക", t_bloodwork_q: "I want to understand my blood work.", bw_intro: "നിങ്ങളുടെ രക്തപരിശോധന വിശകലനം ചെയ്യാൻ എനിക്ക് കഴിയും..." },
+  ml: { morning: "സുപ്രഭാതം", afternoon: "ഗുഡ് ആഫ്റ്റർനൂൺ", evening: "ശുഭ സാయాഹ്నం", topics: "വിഷയങ്ങൾ", placeholder: "ചോദിക്കൂ...", disclaimer: "Izana AI രോഗനിർണയം നൽകുന്നില്ല.", rate: "വിലയിరుത്തുക", feedback_prompt: "എന്താണ് കുറവ്?", feedback_thanks: "നന്ദി!", shadow: "ചോദിക്കുക: \"വിജയസാধ്യത എങ്ങനെ കൂട്ടാം?\"", suggested: "കൂടുതൽ അറിയുക:", t_bloodwork: "രക്തപരിശോധന മനസ്സിലാക്കുക", t_bloodwork_q: "I want to understand my blood work.", bw_intro: "നിങ്ങളുടെ രക്തപരിശോധന വിശകലനം ചെയ്യാൻ എനിക്ക് കഴിയും..." },
   bn: { morning: "সুপ্রভাত", afternoon: "শুভ দুপুর", evening: "শুভ সন্ধ্যা", topics: "বিষয়", placeholder: "লিখুন...", disclaimer: "Izana AI চিকিৎসা পরামর্শ দেয় না।", rate: "রেটিং দিন", feedback_prompt: "কি কম ছিল?", feedback_thanks: "ধন্যবাদ!", shadow: "জিজ্ঞাসা করুন: \"সাফল্যের হার কত?\"", suggested: "আরও জানুন:", t_bloodwork: "রক্ত পরীক্ষা বুঝুন", t_bloodwork_q: "I want to understand my blood work.", bw_intro: "আমি আপনার রক্ত পরীক্ষা বিশ্লেষণ করতে পারি..." }
 };
 
@@ -74,12 +74,10 @@ const GeminiFadeText = ({ text, onComplete }: { text: any, onComplete: () => voi
 
   safeText = safeText.replace(/\*\*/g, '').replace(/\*/g, '').replace(/—/g, '-'); 
 
-  // Split by double line breaks to animate paragraph by paragraph
   const paragraphs = safeText.split('\n\n').filter(p => p.trim() !== '');
 
   useEffect(() => {
-    // Calculate total animation time to trigger the "complete" state (showing follow-up questions)
-    const totalTime = paragraphs.length * 300 + 400; // 300ms stagger + buffer
+    const totalTime = paragraphs.length * 300 + 400;
     const timer = setTimeout(onComplete, totalTime);
     return () => clearTimeout(timer);
   }, [paragraphs.length, onComplete]);
@@ -91,7 +89,7 @@ const GeminiFadeText = ({ text, onComplete }: { text: any, onComplete: () => voi
           key={i}
           initial={{ opacity: 0, y: 5 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.5, delay: i * 0.3 }} // Stagger each paragraph by 0.3s
+          transition={{ duration: 0.5, delay: i * 0.3 }}
           className="leading-relaxed"
         >
           {p}
@@ -110,7 +108,7 @@ export default function ChatPage() {
   const [langCode, setLangCode] = useState("en");
   const [timeOfDay, setTimeOfDay] = useState<"morning" | "afternoon" | "evening">("morning");
   
-  // Track interactions to prevent Izana promo spam
+  // Conversation Depth Tracker
   const [interactionCount, setInteractionCount] = useState(0);
   
   // BLOOD WORK STATES
@@ -148,31 +146,26 @@ export default function ChatPage() {
     if (isLoading || messages.length > 0) scrollToBottomSmooth();
   }, [isLoading, messages.length]);
 
-  // --- INTERCEPT BACK BUTTON ---
   const handleBackClick = () => {
     if (messages.length > 0) {
-      // Clear chat and return to topics view
       setMessages([]);
       setInput("");
       setVerificationData(null);
-      setInteractionCount(0); // Reset interaction count on new chat
+      setInteractionCount(0);
     } else {
-      // If already at topics view, go back to language selection
       router.push("/");
     }
   };
 
-  // --- BLOOD WORK PIPELINE ---
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    // --- ENFORCE PDF ONLY & 5MB SIZE LIMIT ---
     if (file.type !== "application/pdf") {
       alert("Please upload a PDF file.");
       return;
     }
-    if (file.size > 5 * 1024 * 1024) { // 5MB limit
+    if (file.size > 5 * 1024 * 1024) {
       alert("File is too large. Please ensure the PDF is under 5MB.");
       return;
     }
@@ -191,14 +184,13 @@ export default function ChatPage() {
       if (data.error) {
          setMessages(prev => [...prev, { id: Date.now(), type: "bot", content: data.error, isAnimating: false }]);
       } else {
-         setVerificationData(data); // Show verification overlay
+         setVerificationData(data);
       }
       
     } catch (err) {
       setMessages(prev => [...prev, { id: Date.now(), type: "bot", content: "Could not read the PDF report. Please try a different file.", isAnimating: false }]);
     } finally {
       setIsLoading(false);
-      // Reset input so the user can select the same file again if they cancelled
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
   };
@@ -219,23 +211,24 @@ export default function ChatPage() {
           language: langCode, 
           clinical_data: confirmedData,
           treatment: selectedTreatment,
-          interaction_count: interactionCount // Pass interaction count to avoid spam
+          interaction_count: interactionCount 
         })
       });
       const data = await res.json();
       
-      // FIXED: Actually map the suggested questions for blood work responses
-      const safeResponse = Array.isArray(data.response) ? data.response.join('\n\n') : String(data.response || "No response received.");
+      const safeResponse = data.response || "No response received.";
       const safeCitations = Array.isArray(data.citations) ? data.citations.map((c: any) => cleanCitation(c)) : [];
-      const safeQuestions = Array.isArray(data.suggested_questions) ? data.suggested_questions.map((q: any) => String(q)) : [];
+      const safeQuestions = Array.isArray(data.suggested_questions) && data.suggested_questions.length > 0 
+        ? data.suggested_questions.map((q: any) => String(q)) 
+        : ["What lifestyle changes improve these results?", "What are the next steps for my treatment?", "Can you explain AMH levels in more detail?"];
 
       setMessages(prev => [...prev, { 
         id: Date.now() + 1, 
         type: "bot", 
         content: safeResponse, 
         citations: safeCitations, 
-        suggested_questions: safeQuestions, // Added
-        questionOriginal: "Analyze my blood work", // Added for feedback linking
+        suggested_questions: safeQuestions, 
+        questionOriginal: "Blood Work Analysis",
         rating: 0, 
         feedbackSubmitted: false, 
         showReasonBox: false,
@@ -254,21 +247,19 @@ export default function ChatPage() {
     const queryText = text || input;
     if (!queryText.trim() || isLoading) return;
     
-    // Show user message (if not hidden)
     if (!isHiddenQuery || queryText === getText("t_bloodwork_q")) {
       setMessages(prev => [...prev, { id: Date.now(), type: "user", content: queryText }]);
     }
     
     setInput("");
 
-    // INTERCEPT: If it's the blood work topic, trigger local UI instead of LLM
     if (queryText === getText("t_bloodwork_q") || queryText === "I want to understand my blood work.") {
       setTimeout(() => {
         setMessages(prev => [...prev, { 
           id: Date.now() + 1, 
           type: "bot", 
           content: getText("bw_intro"), 
-          isBloodWorkPrompt: true, // Special flag to render dropdowns
+          isBloodWorkPrompt: true,
           isAnimating: false
         }]);
         scrollToBottomSmooth();
@@ -285,12 +276,12 @@ export default function ChatPage() {
         body: JSON.stringify({ 
           message: queryText, 
           language: langCode,
-          interaction_count: interactionCount // Pass interaction count
+          interaction_count: interactionCount
         })
       });
       const data = await res.json();
       
-      const safeResponse = Array.isArray(data.response) ? data.response.join('\n\n') : String(data.response || "No response received.");
+      const safeResponse = data.response || "No response received.";
       const safeCitations = Array.isArray(data.citations) ? data.citations.map((c: any) => cleanCitation(c)) : [];
       const safeQuestions = Array.isArray(data.suggested_questions) ? data.suggested_questions.map((q: any) => String(q)) : [];
 
@@ -339,17 +330,13 @@ export default function ChatPage() {
 
   return (
     <div className="flex flex-col h-screen bg-[#f9f9f9] dark:bg-[#212121] font-sans antialiased overflow-hidden">
-      
-      {/* Hidden File Input for Blood Work - ENFORCED PDF ONLY */}
       <input type="file" accept="application/pdf" className="hidden" ref={fileInputRef} onChange={handleFileUpload} />
 
-      {/* Header */}
       <header className="flex justify-between items-center px-4 py-3 bg-[#f9f9f9]/90 backdrop-blur-md dark:bg-[#212121]/90 z-10 sticky top-0 shrink-0 border-b border-black/5 dark:border-white/5">
         <div className="flex items-center gap-3">
           <button onClick={handleBackClick} className="p-2 rounded-full hover:bg-[#3231b1]/10 dark:hover:bg-white/10 transition-colors">
             <ArrowLeft className="w-5 h-5 text-[#212121] dark:text-[#f9f9f9]" />
           </button>
-          
           <div className="flex items-center gap-2">
             <img 
               src="/logo.png" 
@@ -363,17 +350,13 @@ export default function ChatPage() {
             />
             <span className="hidden font-bold text-[#3231b1] dark:text-[#86eae9] text-lg tracking-tight">Izana AI</span>
           </div>
-          
         </div>
         <select value={langCode} onChange={(e) => { setLangCode(e.target.value); localStorage.setItem("izana_language", e.target.value); }} className="bg-white dark:bg-[#3231b1] border border-black/10 dark:border-white/10 shadow-sm text-[#212121] dark:text-[#f9f9f9] text-xs py-1.5 px-3 rounded-full outline-none appearance-none font-medium">
           <option value="en">English</option><option value="es">Español</option><option value="ja">日本語</option><option value="zh">普通话</option><option value="hi">हिन्दी</option><option value="ta">தமிழ்</option><option value="te">తెలుగు</option><option value="ml">മലയാളം</option><option value="bn">বাংলা</option>
         </select>
       </header>
 
-      {/* Main Chat Area */}
       <div id="chat-scroll-container" className="flex-1 overflow-y-auto p-4 relative chat-container pb-10">
-        
-        {/* Verification Overlay */}
         <AnimatePresence>
           {verificationData && (
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
@@ -388,7 +371,6 @@ export default function ChatPage() {
               <span className="font-bold text-[#3231b1] dark:text-[#86eae9]">{getText(timeOfDay)}</span>
             </motion.h2>
             <p className="text-xs text-[#212121]/50 dark:text-[#f9f9f9]/50 uppercase tracking-widest font-bold mb-6 text-center">{getText("topics")}</p>
-            
             <div className="grid grid-cols-2 md:grid-cols-3 gap-3 w-full max-w-2xl px-2">
               {TOPIC_ICONS.map((topic, i) => (
                 <button key={i} onClick={() => handleSend(getText(topic.queryKey), true)} className="flex flex-col items-center gap-3 p-4 bg-white dark:bg-[#3231b1]/20 rounded-3xl shadow-[0_8px_30px_rgb(0,0,0,0.04)] hover:shadow-[0_8px_30px_rgb(50,49,177,0.15)] active:scale-95 transition-all border border-[#f9f9f9] dark:border-[#3231b1]/30 group">
@@ -402,8 +384,6 @@ export default function ChatPage() {
           <div className="space-y-6 max-w-3xl mx-auto">
             {messages.map((m) => (
               <motion.div initial={{opacity:0, y:10}} animate={{opacity:1, y:0}} key={m.id} className={`flex w-full ${m.type === 'user' ? 'justify-end' : 'justify-start gap-2 sm:gap-3'}`}>
-                
-                {/* BOT AVATAR */}
                 {m.type === 'bot' && (
                   <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-white border border-black/10 dark:border-white/10 shadow-sm flex items-center justify-center shrink-0 mt-1 overflow-hidden p-1.5">
                     <img 
@@ -421,9 +401,7 @@ export default function ChatPage() {
                     </div>
                   </div>
                 )}
-
                 <div className={`max-w-[85%] sm:max-w-[80%] rounded-3xl p-5 shadow-[0_4px_20px_rgb(0,0,0,0.03)] ${m.type === 'user' ? 'bg-white dark:bg-[#3231b1]/20 border border-black/5 dark:border-white/10 text-[#212121] dark:text-white rounded-br-sm' : 'bg-gradient-to-br from-[#3231b1] to-[#230871] text-[#f9f9f9] rounded-bl-sm'}`}>
-                  
                   <div className="whitespace-pre-wrap text-[15px] sm:text-base">
                     {m.isAnimating ? (
                       <GeminiFadeText text={m.content} onComplete={() => markAnimationComplete(m.id)} />
@@ -436,7 +414,6 @@ export default function ChatPage() {
                     )}
                   </div>
 
-                  {/* BLOOD WORK SPECIAL UI INJECTION */}
                   {m.isBloodWorkPrompt && (
                     <div className="mt-5 flex flex-col gap-3 border-t border-white/20 pt-4">
                       <label className="text-xs font-bold uppercase tracking-wider text-[#86eae9]">1. Select Treatment Path (Optional)</label>
@@ -451,7 +428,6 @@ export default function ChatPage() {
                         <option value="Natural Conception" className="text-black">Natural Conception</option>
                         <option value="Timed Intercourse" className="text-black">Timed Intercourse</option>
                       </select>
-                      
                       <label className="text-xs font-bold uppercase tracking-wider text-[#86eae9] mt-2">2. Upload Lab Report (PDF)</label>
                       <button 
                         onClick={() => fileInputRef.current?.click()}
@@ -462,7 +438,6 @@ export default function ChatPage() {
                     </div>
                   )}
                   
-                  {/* STANDARD BOT FOOTER */}
                   {!m.isAnimating && m.type === 'bot' && !m.isBloodWorkPrompt && (
                     <motion.div initial={{ opacity: 0, y: 5 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4 }}>
                       {m.suggested_questions && m.suggested_questions.length > 0 && (
@@ -529,7 +504,6 @@ export default function ChatPage() {
               </motion.div>
             ))}
             
-            {/* TYPING INDICATOR */}
             {isLoading && (
                <motion.div initial={{opacity:0, y:10}} animate={{opacity:1, y:0}} className="flex justify-start gap-2 sm:gap-3 w-full">
                  <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-white border border-black/10 dark:border-white/10 shadow-sm flex items-center justify-center shrink-0 mt-1 overflow-hidden p-1.5">
@@ -560,7 +534,6 @@ export default function ChatPage() {
         )}
       </div>
 
-      {/* Input Bar */}
       <div className="p-4 bg-[#f9f9f9] dark:bg-[#212121] border-t border-black/5 dark:border-white/5 pb-safe shrink-0">
         <div className="max-w-3xl mx-auto relative">
           {!input && !isLoading && (
