@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.routers import chat
+from app.routers import chat, admin
 from dotenv import load_dotenv
 import os
 
@@ -21,6 +21,7 @@ app.add_middleware(
 
 # --- CONNECT THE CHAT LOGIC ---
 app.include_router(chat.router)
+app.include_router(admin.router)
 
 @app.get("/")
 def root():
