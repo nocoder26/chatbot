@@ -20,7 +20,7 @@ const TRANSLATIONS: any = {
     t_nutrition: "Nutrition & Fertility", t_nutrition_q: "How important is what you eat to fertility treatment success?",
     t_bloodwork: "Understand Blood Work", t_bloodwork_q: "I want to understand my blood work.",
     t_success: "Improving Success", t_success_q: "What are 10 things you can do right now to improve fertility treatment success rates?",
-    bw_intro: "I can analyze your blood work and provide insights related to your fertility, reproductive health, and treatment plan. \n\nPlease select your current treatment path and upload your lab report below so I can review it.",
+    bw_intro: "I can analyze your blood work and provide insights related to your fertility, reproductive health, and treatment plan. \n\nPlease select your current treatment path and upload your lab report (PDF) below so I can review it.",
     r1: "Inaccurate", r2: "Vague", r3: "Tone", r4: "Other",
     suggested: "Continue exploring:"
   },
@@ -39,7 +39,7 @@ const TOPIC_ICONS = [
   { icon: <Heart className="w-5 h-5" />, labelKey: "t_male", queryKey: "t_male_q" },
   { icon: <Sparkles className="w-5 h-5" />, labelKey: "t_iui", queryKey: "t_iui_q" },
   { icon: <BookOpen className="w-5 h-5" />, labelKey: "t_nutrition", queryKey: "t_nutrition_q" },
-  { icon: <TestTube className="w-5 h-5" />, labelKey: "t_bloodwork", queryKey: "t_bloodwork_q" }, // CHANGED
+  { icon: <TestTube className="w-5 h-5" />, labelKey: "t_bloodwork", queryKey: "t_bloodwork_q" }, 
   { icon: <CheckCircle2 className="w-5 h-5" />, labelKey: "t_success", queryKey: "t_success_q" },
 ];
 
@@ -104,7 +104,7 @@ export default function ChatPage() {
   
   // BLOOD WORK STATES
   const [verificationData, setVerificationData] = useState<any>(null);
-  const [selectedTreatment, setSelectedTreatment] = useState("IVF");
+  const [selectedTreatment, setSelectedTreatment] = useState("Not sure / Just checking");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -147,10 +147,33 @@ export default function ChatPage() {
     if (isLoading || messages.length > 0) scrollToBottomSmooth();
   }, [isLoading, messages.length]);
 
+  // --- INTERCEPT BACK BUTTON ---
+  const handleBackClick = () => {
+    if (messages.length > 0) {
+      // Clear chat and return to topics view
+      setMessages([]);
+      setInput("");
+      setVerificationData(null);
+    } else {
+      // If already at topics view, go back to language selection
+      router.push("/");
+    }
+  };
+
   // --- BLOOD WORK PIPELINE ---
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+
+    // --- ENFORCE PDF ONLY & 5MB SIZE LIMIT ---
+    if (file.type !== "application/pdf") {
+      alert("Please upload a PDF file.");
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) { // 5MB limit
+      alert("File is too large. Please ensure the PDF is under 5MB.");
+      return;
+    }
 
     setIsLoading(true);
     const formData = new FormData();
@@ -164,9 +187,11 @@ export default function ChatPage() {
       const data = await res.json();
       setVerificationData(data); // Show verification overlay
     } catch (err) {
-      setMessages(prev => [...prev, { id: Date.now(), type: "bot", content: "Could not read the report. Please try a clearer photo.", isAnimating: false }]);
+      setMessages(prev => [...prev, { id: Date.now(), type: "bot", content: "Could not read the PDF report. Please try a different file.", isAnimating: false }]);
     } finally {
       setIsLoading(false);
+      // Reset input so the user can select the same file again if they cancelled
+      if (fileInputRef.current) fileInputRef.current.value = '';
     }
   };
 
@@ -283,13 +308,13 @@ export default function ChatPage() {
   return (
     <div className="flex flex-col h-screen bg-[#f9f9f9] dark:bg-[#212121] font-sans antialiased overflow-hidden">
       
-      {/* Hidden File Input for Blood Work */}
-      <input type="file" accept="image/*" className="hidden" ref={fileInputRef} onChange={handleFileUpload} />
+      {/* Hidden File Input for Blood Work - ENFORCED PDF ONLY */}
+      <input type="file" accept="application/pdf" className="hidden" ref={fileInputRef} onChange={handleFileUpload} />
 
       {/* Header */}
       <header className="flex justify-between items-center px-4 py-3 bg-[#f9f9f9]/90 backdrop-blur-md dark:bg-[#212121]/90 z-10 sticky top-0 shrink-0 border-b border-black/5 dark:border-white/5">
         <div className="flex items-center gap-3">
-          <button onClick={() => router.push("/")} className="p-2 rounded-full hover:bg-[#3231b1]/10 dark:hover:bg-white/10 transition-colors">
+          <button onClick={handleBackClick} className="p-2 rounded-full hover:bg-[#3231b1]/10 dark:hover:bg-white/10 transition-colors">
             <ArrowLeft className="w-5 h-5 text-[#212121] dark:text-[#f9f9f9]" />
           </button>
           
@@ -378,24 +403,25 @@ export default function ChatPage() {
                   {/* BLOOD WORK SPECIAL UI INJECTION */}
                   {m.isBloodWorkPrompt && (
                     <div className="mt-5 flex flex-col gap-3 border-t border-white/20 pt-4">
-                      <label className="text-xs font-bold uppercase tracking-wider text-[#86eae9]">1. Select Treatment Path</label>
+                      <label className="text-xs font-bold uppercase tracking-wider text-[#86eae9]">1. Select Treatment Path (Optional)</label>
                       <select 
                         value={selectedTreatment} 
                         onChange={(e) => setSelectedTreatment(e.target.value)}
                         className="p-3 rounded-xl bg-white/10 text-white border border-white/20 text-sm focus:outline-none focus:ring-2 focus:ring-[#86eae9]"
                       >
+                        <option value="Not sure / Just checking" className="text-black">Not sure / Just checking</option>
                         <option value="IVF" className="text-black">IVF</option>
                         <option value="IUI" className="text-black">IUI</option>
                         <option value="Natural Conception" className="text-black">Natural Conception</option>
                         <option value="Timed Intercourse" className="text-black">Timed Intercourse</option>
                       </select>
                       
-                      <label className="text-xs font-bold uppercase tracking-wider text-[#86eae9] mt-2">2. Upload Lab Report</label>
+                      <label className="text-xs font-bold uppercase tracking-wider text-[#86eae9] mt-2">2. Upload Lab Report (PDF)</label>
                       <button 
                         onClick={() => fileInputRef.current?.click()}
                         className="bg-[#ff7a55] hover:bg-[#e66c4a] text-white py-3 px-4 rounded-xl text-sm font-bold flex items-center justify-center gap-2 transition-transform active:scale-95 shadow-md"
                       >
-                        <Paperclip className="w-4 h-4" /> Select Image
+                        <Paperclip className="w-4 h-4" /> Select PDF
                       </button>
                     </div>
                   )}
