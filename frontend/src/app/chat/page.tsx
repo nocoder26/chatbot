@@ -49,4 +49,517 @@ const cleanCitation = (raw: any) => {
   try {
     let cleaned = String(raw || "").replace(/\\/g, '/').split('/').pop() || String(raw);
     cleaned = cleaned.replace(/\.pdf$/i, '');
-    cleaned = cleaned.replace
+    cleaned = cleaned.replace(/(_compress|-compress|_final_version|_\d_\d|nbsped|factsheet)/gi, '');
+    cleaned = cleaned.replace(/\d{8,}/g, '');
+    cleaned = cleaned.replace(/[-_]/g, ' ');
+    return cleaned.trim().replace(/\b\w/g, c => c.toUpperCase());
+  } catch {
+    return "Medical Document";
+  }
+};
+
+const formatText = (text: string) => {
+  let clean = text.replace(/\*\*\s*\n/g, ''); 
+  clean = clean.replace(/—/g, '-'); 
+  return clean.replace(/\*\*/g, '').replace(/\*/g, '');
+};
+
+// --- NEW GEMINI-STYLE FADE RENDERING ---
+const GeminiFadeText = ({ text, onComplete }: { text: any, onComplete: () => void }) => {
+  let safeText = "";
+  if (typeof text === 'string') safeText = text;
+  else if (Array.isArray(text)) safeText = text.join('\n\n');
+  else if (typeof text === 'object' && text !== null) safeText = Object.values(text).join('\n\n');
+  else safeText = String(text || "");
+
+  safeText = safeText.replace(/\*\*/g, '').replace(/\*/g, '').replace(/—/g, '-'); 
+
+  // Split by double line breaks to animate paragraph by paragraph
+  const paragraphs = safeText.split('\n\n').filter(p => p.trim() !== '');
+
+  useEffect(() => {
+    // Calculate total animation time to trigger the "complete" state (showing follow-up questions)
+    const totalTime = paragraphs.length * 300 + 400; // 300ms stagger + buffer
+    const timer = setTimeout(onComplete, totalTime);
+    return () => clearTimeout(timer);
+  }, [paragraphs.length, onComplete]);
+
+  return (
+    <div className="flex flex-col gap-4">
+      {paragraphs.map((p, i) => (
+        <motion.p
+          key={i}
+          initial={{ opacity: 0, y: 5 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.5, delay: i * 0.3 }} // Stagger each paragraph by 0.3s
+          className="leading-relaxed"
+        >
+          {p}
+        </motion.p>
+      ))}
+    </div>
+  );
+};
+
+export default function ChatPage() {
+  const router = useRouter();
+  const [messages, setMessages] = useState<any[]>([]);
+  const [input, setInput] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
+  const [loadingStep, setLoadingStep] = useState(0);
+  const [langCode, setLangCode] = useState("en");
+  const [timeOfDay, setTimeOfDay] = useState<"morning" | "afternoon" | "evening">("morning");
+  
+  // BLOOD WORK STATES
+  const [verificationData, setVerificationData] = useState<any>(null);
+  const [selectedTreatment, setSelectedTreatment] = useState("Not sure / Just checking");
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  
+  const getText = (key: string) => {
+    const langDict = TRANSLATIONS[langCode] || TRANSLATIONS["en"];
+    return langDict[key] || TRANSLATIONS["en"][key] || key;
+  };
+
+  useEffect(() => {
+    const saved = localStorage.getItem("izana_language");
+    if (saved) setLangCode(saved);
+    const hour = new Date().getHours();
+    if (hour < 12) setTimeOfDay("morning");
+    else if (hour < 18) setTimeOfDay("afternoon");
+    else setTimeOfDay("evening");
+  }, []);
+
+  useEffect(() => {
+    if (isLoading) {
+      const interval = setInterval(() => setLoadingStep(p => (p < 3 ? p + 1 : p)), 1000);
+      return () => clearInterval(interval);
+    }
+    setLoadingStep(0);
+  }, [isLoading]);
+
+  const scrollToBottomSmooth = () => messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+
+  useEffect(() => {
+    if (isLoading || messages.length > 0) scrollToBottomSmooth();
+  }, [isLoading, messages.length]);
+
+  // --- INTERCEPT BACK BUTTON ---
+  const handleBackClick = () => {
+    if (messages.length > 0) {
+      // Clear chat and return to topics view
+      setMessages([]);
+      setInput("");
+      setVerificationData(null);
+    } else {
+      // If already at topics view, go back to language selection
+      router.push("/");
+    }
+  };
+
+  // --- BLOOD WORK PIPELINE ---
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    // --- ENFORCE PDF ONLY & 5MB SIZE LIMIT ---
+    if (file.type !== "application/pdf") {
+      alert("Please upload a PDF file.");
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) { // 5MB limit
+      alert("File is too large. Please ensure the PDF is under 5MB.");
+      return;
+    }
+
+    setIsLoading(true);
+    const formData = new FormData();
+    formData.append('file', file, file.name); 
+
+    try {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/analyze-bloodwork`, {
+        method: 'POST',
+        body: formData,
+      });
+      const data = await res.json();
+      
+      if (data.error) {
+         setMessages(prev => [...prev, { id: Date.now(), type: "bot", content: data.error, isAnimating: false }]);
+      } else {
+         setVerificationData(data); // Show verification overlay
+      }
+      
+    } catch (err) {
+      setMessages(prev => [...prev, { id: Date.now(), type: "bot", content: "Could not read the PDF report. Please try a different file.", isAnimating: false }]);
+    } finally {
+      setIsLoading(false);
+      // Reset input so the user can select the same file again if they cancelled
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  const onFinalConfirm = async (confirmedData: any) => {
+    setVerificationData(null); 
+    setIsLoading(true);
+    
+    const userMsg = { id: Date.now(), type: "user", content: `Analyzing my verified blood work. Target Treatment: ${selectedTreatment}` };
+    setMessages(prev => [...prev, userMsg]);
+
+    try {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ 
+          message: "Analyze these blood results and provide insights based on my treatment.", 
+          language: langCode, 
+          clinical_data: confirmedData,
+          treatment: selectedTreatment
+        })
+      });
+      const data = await res.json();
+      setMessages(prev => [...prev, { 
+        id: Date.now() + 1, type: "bot", content: data.response, citations: data.citations || [], isAnimating: true 
+      }]);
+    } catch {
+      setMessages(prev => [...prev, { id: Date.now(), type: "bot", content: "Analysis failed. Please try again.", isAnimating: false }]);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleSend = async (text = input, isHiddenQuery = false) => {
+    const queryText = text || input;
+    if (!queryText.trim() || isLoading) return;
+    
+    // Show user message (if not hidden)
+    if (!isHiddenQuery || queryText === getText("t_bloodwork_q")) {
+      setMessages(prev => [...prev, { id: Date.now(), type: "user", content: queryText }]);
+    }
+    
+    setInput("");
+
+    // INTERCEPT: If it's the blood work topic, trigger local UI instead of LLM
+    if (queryText === getText("t_bloodwork_q") || queryText === "I want to understand my blood work.") {
+      setTimeout(() => {
+        setMessages(prev => [...prev, { 
+          id: Date.now() + 1, 
+          type: "bot", 
+          content: getText("bw_intro"), 
+          isBloodWorkPrompt: true, // Special flag to render dropdowns
+          isAnimating: false
+        }]);
+        scrollToBottomSmooth();
+      }, 600);
+      return;
+    }
+
+    setIsLoading(true);
+
+    try {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: queryText, language: langCode })
+      });
+      const data = await res.json();
+      
+      const safeResponse = Array.isArray(data.response) ? data.response.join('\n\n') : String(data.response || "No response received.");
+      const safeCitations = Array.isArray(data.citations) ? data.citations.map((c: any) => cleanCitation(c)) : [];
+      const safeQuestions = Array.isArray(data.suggested_questions) ? data.suggested_questions.map((q: any) => String(q)) : [];
+
+      setMessages(prev => [...prev, { 
+        id: Date.now() + 1, 
+        type: "bot", 
+        content: safeResponse, 
+        citations: safeCitations, 
+        suggested_questions: safeQuestions,
+        questionOriginal: queryText, 
+        rating: 0, 
+        feedbackSubmitted: false, 
+        showReasonBox: false,
+        isAnimating: true 
+      }]);
+    } catch {
+      setMessages(prev => [...prev, { id: Date.now(), type: "bot", content: "Connection error. Please try again.", isAnimating: false }]);
+    } finally { setIsLoading(false); }
+  };
+
+  const markAnimationComplete = (id: number) => {
+    setMessages(prev => prev.map(m => m.id === id ? { ...m, isAnimating: false } : m));
+    setTimeout(scrollToBottomSmooth, 100); 
+  };
+
+  const submitRating = async (msgId: number, rating: number, reason: string = "") => {
+    const msg = messages.find(m => m.id === msgId);
+    if (!msg) return;
+    const isInstantSubmit = rating >= 4 || reason !== "";
+
+    setMessages(prev => prev.map(m => 
+      m.id === msgId ? { ...m, rating, feedbackSubmitted: isInstantSubmit, showReasonBox: rating < 4 && reason === "" } : m
+    ));
+
+    if (isInstantSubmit) {
+      try {
+        await fetch(`${process.env.NEXT_PUBLIC_API_URL}/feedback`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ question: msg.questionOriginal, answer: msg.content, rating, reason, suggested_questions: msg.suggested_questions })
+        });
+      } catch (e) { console.error(e); }
+    }
+  };
+
+  return (
+    <div className="flex flex-col h-screen bg-[#f9f9f9] dark:bg-[#212121] font-sans antialiased overflow-hidden">
+      
+      {/* Hidden File Input for Blood Work - ENFORCED PDF ONLY */}
+      <input type="file" accept="application/pdf" className="hidden" ref={fileInputRef} onChange={handleFileUpload} />
+
+      {/* Header */}
+      <header className="flex justify-between items-center px-4 py-3 bg-[#f9f9f9]/90 backdrop-blur-md dark:bg-[#212121]/90 z-10 sticky top-0 shrink-0 border-b border-black/5 dark:border-white/5">
+        <div className="flex items-center gap-3">
+          <button onClick={handleBackClick} className="p-2 rounded-full hover:bg-[#3231b1]/10 dark:hover:bg-white/10 transition-colors">
+            <ArrowLeft className="w-5 h-5 text-[#212121] dark:text-[#f9f9f9]" />
+          </button>
+          
+          <div className="flex items-center gap-2">
+            <img 
+              src="/logo.png" 
+              alt="Izana AI" 
+              className="h-6 md:h-7 object-contain dark:invert" 
+              onError={(e) => {
+                e.currentTarget.style.display = 'none'; 
+                const fallback = e.currentTarget.nextElementSibling as HTMLElement;
+                if (fallback) fallback.style.display = 'block'; 
+              }}
+            />
+            <span className="hidden font-bold text-[#3231b1] dark:text-[#86eae9] text-lg tracking-tight">Izana AI</span>
+          </div>
+          
+        </div>
+        <select value={langCode} onChange={(e) => { setLangCode(e.target.value); localStorage.setItem("izana_language", e.target.value); }} className="bg-white dark:bg-[#3231b1] border border-black/10 dark:border-white/10 shadow-sm text-[#212121] dark:text-[#f9f9f9] text-xs py-1.5 px-3 rounded-full outline-none appearance-none font-medium">
+          <option value="en">English</option><option value="es">Español</option><option value="ja">日本語</option><option value="zh">普通话</option><option value="hi">हिन्दी</option><option value="ta">தமிழ்</option><option value="te">తెలుగు</option><option value="ml">മലയാളം</option><option value="bn">বাংলা</option>
+        </select>
+      </header>
+
+      {/* Main Chat Area */}
+      <div id="chat-scroll-container" className="flex-1 overflow-y-auto p-4 relative chat-container pb-10">
+        
+        {/* Verification Overlay */}
+        <AnimatePresence>
+          {verificationData && (
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+               <BloodWorkConfirm initialData={verificationData} onConfirm={onFinalConfirm} onCancel={() => setVerificationData(null)} />
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {messages.length === 0 && !isLoading ? (
+          <div className="h-full flex flex-col items-center justify-center -mt-4">
+            <motion.h2 initial={{opacity:0, y:10}} animate={{opacity:1, y:0}} className="text-3xl font-light text-[#212121] dark:text-[#f9f9f9] mb-8 text-center">
+              <span className="font-bold text-[#3231b1] dark:text-[#86eae9]">{getText(timeOfDay)}</span>
+            </motion.h2>
+            <p className="text-xs text-[#212121]/50 dark:text-[#f9f9f9]/50 uppercase tracking-widest font-bold mb-6 text-center">{getText("topics")}</p>
+            
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-3 w-full max-w-2xl px-2">
+              {TOPIC_ICONS.map((topic, i) => (
+                <button key={i} onClick={() => handleSend(getText(topic.queryKey), true)} className="flex flex-col items-center gap-3 p-4 bg-white dark:bg-[#3231b1]/20 rounded-3xl shadow-[0_8px_30px_rgb(0,0,0,0.04)] hover:shadow-[0_8px_30px_rgb(50,49,177,0.15)] active:scale-95 transition-all border border-[#f9f9f9] dark:border-[#3231b1]/30 group">
+                  <div className="p-3 bg-[#86eae9]/20 text-[#3231b1] dark:text-[#86eae9] rounded-full group-hover:bg-[#3231b1] group-hover:text-white transition-colors">{topic.icon}</div>
+                  <span className="text-[13px] font-bold text-[#212121] dark:text-[#f9f9f9] text-center leading-tight">{getText(topic.labelKey)}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-6 max-w-3xl mx-auto">
+            {messages.map((m) => (
+              <motion.div initial={{opacity:0, y:10}} animate={{opacity:1, y:0}} key={m.id} className={`flex w-full ${m.type === 'user' ? 'justify-end' : 'justify-start gap-2 sm:gap-3'}`}>
+                
+                {/* BOT AVATAR */}
+                {m.type === 'bot' && (
+                  <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-white border border-black/10 dark:border-white/10 shadow-sm flex items-center justify-center shrink-0 mt-1 overflow-hidden p-1.5">
+                    <img 
+                      src="/logo.png" 
+                      alt="AI" 
+                      className="w-full h-full object-contain dark:invert" 
+                      onError={(e) => {
+                        e.currentTarget.style.display = 'none'; 
+                        const fallback = e.currentTarget.nextElementSibling as HTMLElement;
+                        if (fallback) fallback.style.display = 'flex'; 
+                      }}
+                    />
+                    <div className="hidden w-full h-full bg-[#3231b1] rounded-full items-center justify-center">
+                      <span className="text-[10px] font-bold text-white">AI</span>
+                    </div>
+                  </div>
+                )}
+
+                <div className={`max-w-[85%] sm:max-w-[80%] rounded-3xl p-5 shadow-[0_4px_20px_rgb(0,0,0,0.03)] ${m.type === 'user' ? 'bg-white dark:bg-[#3231b1]/20 border border-black/5 dark:border-white/10 text-[#212121] dark:text-white rounded-br-sm' : 'bg-gradient-to-br from-[#3231b1] to-[#230871] text-[#f9f9f9] rounded-bl-sm'}`}>
+                  
+                  <div className="whitespace-pre-wrap text-[15px] sm:text-base">
+                    {m.isAnimating ? (
+                      <GeminiFadeText text={m.content} onComplete={() => markAnimationComplete(m.id)} />
+                    ) : (
+                      <div className="flex flex-col gap-4">
+                        {formatText(m.content).split('\n\n').map((p, idx) => (
+                          <p key={idx} className="leading-relaxed">{p}</p>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* BLOOD WORK SPECIAL UI INJECTION */}
+                  {m.isBloodWorkPrompt && (
+                    <div className="mt-5 flex flex-col gap-3 border-t border-white/20 pt-4">
+                      <label className="text-xs font-bold uppercase tracking-wider text-[#86eae9]">1. Select Treatment Path (Optional)</label>
+                      <select 
+                        value={selectedTreatment} 
+                        onChange={(e) => setSelectedTreatment(e.target.value)}
+                        className="p-3 rounded-xl bg-white/10 text-white border border-white/20 text-sm focus:outline-none focus:ring-2 focus:ring-[#86eae9]"
+                      >
+                        <option value="Not sure / Just checking" className="text-black">Not sure / Just checking</option>
+                        <option value="IVF" className="text-black">IVF</option>
+                        <option value="IUI" className="text-black">IUI</option>
+                        <option value="Natural Conception" className="text-black">Natural Conception</option>
+                        <option value="Timed Intercourse" className="text-black">Timed Intercourse</option>
+                      </select>
+                      
+                      <label className="text-xs font-bold uppercase tracking-wider text-[#86eae9] mt-2">2. Upload Lab Report (PDF)</label>
+                      <button 
+                        onClick={() => fileInputRef.current?.click()}
+                        className="bg-[#ff7a55] hover:bg-[#e66c4a] text-white py-3 px-4 rounded-xl text-sm font-bold flex items-center justify-center gap-2 transition-transform active:scale-95 shadow-md"
+                      >
+                        <Paperclip className="w-4 h-4" /> Select PDF
+                      </button>
+                    </div>
+                  )}
+                  
+                  {/* STANDARD BOT FOOTER */}
+                  {!m.isAnimating && m.type === 'bot' && !m.isBloodWorkPrompt && (
+                    <motion.div initial={{ opacity: 0, y: 5 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4 }}>
+                      {m.suggested_questions && m.suggested_questions.length > 0 && (
+                        <div className="mt-5 flex flex-col gap-2 border-t border-white/10 pt-4">
+                          <p className="text-[11px] font-bold text-[#86eae9] uppercase tracking-wider pl-1">{getText("suggested")}</p>
+                          {m.suggested_questions.map((sq: string, i: number) => (
+                            <button 
+                              key={i}
+                              onClick={() => handleSend(sq)}
+                              className="text-left text-sm bg-white/10 hover:bg-white/20 text-white py-2.5 px-4 rounded-2xl transition-all flex items-center justify-between gap-3 group active:scale-[0.98]"
+                            >
+                              <span className="leading-snug">{sq}</span>
+                              <ChevronRight className="w-4 h-4 text-[#ff7a55] group-hover:translate-x-1 transition-transform flex-shrink-0" />
+                            </button>
+                          ))}
+                        </div>
+                      )}
+
+                      {m.citations && m.citations.length > 0 && (
+                        <div className="mt-4 pt-3 border-t border-white/10">
+                          <p className="text-[10px] font-bold uppercase tracking-wider opacity-60 mb-2">Sources Referenced</p>
+                          <div className="flex flex-wrap gap-2">
+                            {m.citations.map((c: string, i: number) => (
+                              <span key={i} className="text-[11px] bg-black/20 px-3 py-1.5 rounded-full cursor-default opacity-90 border border-white/5">{c}</span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="mt-4 pt-3 border-t border-white/10">
+                        <AnimatePresence mode="wait">
+                          {!m.feedbackSubmitted ? (
+                            <motion.div key="rating" initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}} className="flex flex-col gap-3">
+                              <div className="flex items-center justify-between">
+                                <span className="text-[11px] font-bold uppercase tracking-tighter opacity-70">{getText("rate")}</span>
+                                <div className="flex gap-1.5">
+                                  {[1, 2, 3, 4, 5].map((s) => (
+                                    <button key={s} onClick={() => submitRating(m.id, s)} className={`text-lg transition-all hover:scale-125 active:scale-90 ${m.rating >= s ? 'filter-none' : 'grayscale opacity-30 hover:opacity-100'}`}>⭐</button>
+                                  ))}
+                                </div>
+                              </div>
+                              {m.showReasonBox && (
+                                <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} className="overflow-hidden">
+                                  <p className="text-[11px] font-bold text-white mb-2">{getText("feedback_prompt")}</p>
+                                  <div className="grid grid-cols-2 gap-2">
+                                    {[getText("r1"), getText("r2"), getText("r3"), getText("r4")].map((label, idx) => (
+                                      <button key={idx} onClick={() => submitRating(m.id, m.rating, label)} className="text-[11px] bg-white/10 hover:bg-[#ff7a55] py-2.5 px-2 rounded-xl border border-white/10 transition-colors text-center font-bold active:scale-95">{label}</button>
+                                    ))}
+                                  </div>
+                                </motion.div>
+                              )}
+                            </motion.div>
+                          ) : (
+                            <motion.div key="thanks" initial={{scale:0.9, opacity:0}} animate={{scale:1, opacity:1}} className="flex items-center gap-2 py-1 text-[#86eae9]">
+                              <CheckCircle2 className="w-4 h-4 text-[#86eae9]" />
+                              <span className="text-xs font-bold italic">{getText("feedback_thanks")}</span>
+                            </motion.div>
+                          )}
+                        </AnimatePresence>
+                      </div>
+                    </motion.div>
+                  )}
+                </div>
+              </motion.div>
+            ))}
+            
+            {/* TYPING INDICATOR */}
+            {isLoading && (
+               <motion.div initial={{opacity:0, y:10}} animate={{opacity:1, y:0}} className="flex justify-start gap-2 sm:gap-3 w-full">
+                 <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-white border border-black/10 dark:border-white/10 shadow-sm flex items-center justify-center shrink-0 mt-1 overflow-hidden p-1.5">
+                    <img 
+                      src="/logo.png" 
+                      alt="AI" 
+                      className="w-full h-full object-contain dark:invert" 
+                      onError={(e) => {
+                        e.currentTarget.style.display = 'none'; 
+                        const fallback = e.currentTarget.nextElementSibling as HTMLElement;
+                        if (fallback) fallback.style.display = 'flex'; 
+                      }}
+                    />
+                    <div className="hidden w-full h-full bg-[#3231b1] rounded-full items-center justify-center">
+                      <span className="text-[10px] font-bold text-white">AI</span>
+                    </div>
+                 </div>
+                 <div className="bg-white dark:bg-[#3231b1]/20 border border-black/5 dark:border-white/10 rounded-3xl rounded-bl-sm px-5 py-4 flex items-center gap-3 shadow-[0_4px_20px_rgb(0,0,0,0.03)]">
+                   <Loader2 className="w-5 h-5 animate-spin text-[#3231b1] dark:text-[#86eae9]" />
+                   <motion.span key={loadingStep} initial={{ opacity: 0, y: 2 }} animate={{ opacity: 1, y: 0 }} className="text-sm font-bold text-[#3231b1] dark:text-[#86eae9]">
+                     {LOADING_STEPS[loadingStep]}
+                   </motion.span>
+                 </div>
+               </motion.div>
+            )}
+            <div ref={messagesEndRef} className="h-2" />
+          </div>
+        )}
+      </div>
+
+      {/* Input Bar */}
+      <div className="p-4 bg-[#f9f9f9] dark:bg-[#212121] border-t border-black/5 dark:border-white/5 pb-safe shrink-0">
+        <div className="max-w-3xl mx-auto relative">
+          {!input && !isLoading && (
+            <span className="absolute left-6 top-[18px] text-[#212121]/40 dark:text-[#f9f9f9]/40 pointer-events-none text-base hidden sm:block truncate w-2/3">
+              {getText("shadow")}
+            </span>
+          )}
+          <div className="relative flex items-center shadow-[0_8px_30px_rgb(0,0,0,0.06)] rounded-full bg-white dark:bg-[#212121] border border-black/5 dark:border-white/10">
+            <input 
+              value={input} 
+              onChange={(e) => setInput(e.target.value)} 
+              onKeyDown={(e) => e.key === 'Enter' && handleSend()} 
+              disabled={isLoading} 
+              placeholder={getText("placeholder")} 
+              className="w-full pl-6 pr-14 py-4 bg-transparent rounded-full focus:outline-none text-[#212121] dark:text-[#f9f9f9] placeholder-[#212121]/40 sm:placeholder-transparent text-[15px]" 
+            />
+            <button 
+              onClick={() => handleSend()} 
+              disabled={isLoading || !input} 
+              className="absolute right-2 p-2.5 bg-[#ff7a55] rounded-full text-white hover:bg-[#e66c4a] active:scale-90 disabled:opacity-40 disabled:active:scale-100 transition-all shadow-sm"
+            >
+              <Send className="w-5 h-5 ml-0.5" />
+            </button>
+          </div>
+          <p className="text-[10px] text-center text-[#212121]/40 dark:text-[#f9f9f9]/40 mt-3 max-w-xl mx-auto leading-tight font-medium">{getText("disclaimer")}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
