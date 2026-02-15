@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
-import { Lock, AlertTriangle, MessageSquare, LogOut, RefreshCw, BarChart3, Star } from "lucide-react";
+import { Lock, AlertTriangle, MessageSquare, LogOut, RefreshCw, BarChart3, Star, TestTube } from "lucide-react";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 const ADMIN_PIN = "1234";
@@ -63,16 +63,27 @@ function PinEntry({ onSuccess }: { onSuccess: () => void }) {
 }
 
 function Dashboard() {
-  const [activeTab, setActiveTab] = useState<"overview" | "gaps" | "feedback">("overview");
+  const [activeTab, setActiveTab] = useState<"gaps" | "feedback">("gaps");
   const [stats, setStats] = useState<any>({ gaps: [], feedback: [] });
   const [loading, setLoading] = useState(true);
 
   const fetchStats = async () => {
     setLoading(true);
     try {
+      // Fetches the JSON-based logs generated natively by the chat bot
       const response = await fetch(`${API_BASE_URL}/admin/stats`);
-      if (response.ok) setStats(await response.json());
-    } catch (err) { console.error(err); } finally { setLoading(false); }
+      if (response.ok) {
+        const data = await response.json();
+        setStats({
+          gaps: data.gaps || [],
+          feedback: data.feedback || []
+        });
+      }
+    } catch (err) { 
+      console.error(err); 
+    } finally { 
+      setLoading(false); 
+    }
   };
 
   useEffect(() => { fetchStats(); }, []);
@@ -92,7 +103,7 @@ function Dashboard() {
       <header className="bg-white dark:bg-slate-800 shadow-sm sticky top-0 z-10">
         <div className="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
           <h1 className="text-xl font-bold text-slate-800 dark:text-white flex items-center gap-2">
-            Izana Intelligence
+            Izana Intelligence Dashboard
             {loading && <RefreshCw className="w-4 h-4 animate-spin text-slate-400" />}
           </h1>
           <button onClick={() => { localStorage.removeItem("adminAuthenticated"); window.location.reload(); }} className="flex items-center gap-2 px-4 py-2 border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 rounded-lg hover:bg-slate-50 transition-colors text-sm">
@@ -109,12 +120,12 @@ function Dashboard() {
             <div className="flex justify-between items-start mb-4">
               <div>
                 <p className="text-sm text-slate-500 uppercase tracking-wider font-semibold">Avg Quality Score</p>
-                <p className="text-3xl font-bold text-slate-800 dark:text-white mt-1">{avgRating}</p>
+                <p className="text-3xl font-bold text-slate-800 dark:text-white mt-1">{avgRating} <span className="text-lg text-slate-400">/ 5</span></p>
               </div>
               <div className="p-2 bg-yellow-100 rounded-lg"><Star className="w-5 h-5 text-yellow-600" /></div>
             </div>
             <div className="h-1 w-full bg-slate-100 rounded-full overflow-hidden">
-              <div className="h-full bg-yellow-500" style={{ width: `${(Number(avgRating)/5)*100}%` }}></div>
+              <div className="h-full bg-yellow-500 transition-all" style={{ width: `${(Number(avgRating)/5)*100}%` }}></div>
             </div>
           </div>
 
@@ -126,11 +137,11 @@ function Dashboard() {
               </div>
               <div className="p-2 bg-red-100 rounded-lg"><AlertTriangle className="w-5 h-5 text-red-600" /></div>
             </div>
-             <p className="text-xs text-slate-400">Questions needing content updates</p>
+             <p className="text-xs text-slate-400">Queries lacking high-confidence textbook data</p>
           </div>
 
           <div className="bg-white dark:bg-slate-800 p-6 rounded-2xl shadow-sm border border-slate-100 dark:border-slate-700">
-             <p className="text-sm text-slate-500 uppercase tracking-wider font-semibold mb-2">Rating Distribution</p>
+             <p className="text-sm text-slate-500 uppercase tracking-wider font-semibold mb-2">Sentiment Distribution</p>
              <SimpleBarChart data={ratingCounts} />
           </div>
         </div>
@@ -152,18 +163,33 @@ function Dashboard() {
                 <thead className="bg-slate-50 dark:bg-slate-700/50">
                   <tr>
                     <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase">Time</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase">Question</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase">Confidence</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase">Context Type</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase">Missing Scenario / Query</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase">DB Confidence</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-200 dark:divide-slate-700">
                   {stats.gaps.slice().reverse().map((gap: any, i: number) => (
                     <tr key={i} className="hover:bg-slate-50 dark:hover:bg-slate-800">
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-500">{new Date(gap.timestamp).toLocaleDateString()}</td>
+                      <td className="px-6 py-4 whitespace-nowrap text-xs text-slate-500 font-mono">
+                        {new Date(gap.timestamp).toLocaleDateString()} <br/>
+                        {new Date(gap.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm">
+                        <span className={`px-2 py-1 rounded-full text-xs font-bold flex items-center gap-1 w-max ${gap.type === 'Blood Work Gap' ? 'bg-orange-100 text-orange-800' : 'bg-slate-100 text-slate-800'}`}>
+                          {gap.type === 'Blood Work Gap' ? <TestTube className="w-3 h-3"/> : <MessageSquare className="w-3 h-3"/>}
+                          {gap.type || 'General'}
+                        </span>
+                      </td>
                       <td className="px-6 py-4 text-sm font-medium text-slate-800 dark:text-slate-200">{gap.question}</td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm"><span className="px-2 py-1 rounded-full bg-red-100 text-red-800 text-xs">{gap.score.toFixed(2)}</span></td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-red-500 font-bold">
+                        {((gap.score || 0) * 100).toFixed(1)}%
+                      </td>
                     </tr>
                   ))}
+                  {stats.gaps.length === 0 && (
+                    <tr><td colSpan={4} className="p-8 text-center text-slate-400">No knowledge gaps detected yet.</td></tr>
+                  )}
                 </tbody>
               </table>
             ) : (
@@ -172,19 +198,28 @@ function Dashboard() {
                   <tr>
                     <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase">Rating</th>
                     <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase">Reason</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase">Question / Answer</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase">User Query</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-200 dark:divide-slate-700">
                   {stats.feedback.slice().reverse().map((fb: any, i: number) => (
                     <tr key={i} className="hover:bg-slate-50 dark:hover:bg-slate-800">
                       <td className="px-6 py-4 whitespace-nowrap text-sm">
-                        <span className={`px-2 py-1 rounded-full text-xs font-bold ${fb.rating >= 4 ? "bg-green-100 text-green-800" : "bg-red-100 text-red-800"}`}>{fb.rating} ★</span>
+                        <span className={`px-2 py-1 rounded-full text-xs font-bold ${fb.rating >= 4 ? "bg-green-100 text-green-800" : "bg-red-100 text-red-800"}`}>
+                          {fb.rating} ★
+                        </span>
                       </td>
-                      <td className="px-6 py-4 text-sm text-slate-600">{fb.reason || "No reason provided"}</td>
-                      <td className="px-6 py-4 text-sm text-slate-500 max-w-xs truncate">{fb.question}</td>
+                      <td className="px-6 py-4 text-sm text-slate-600 font-medium">
+                        {fb.reason || <span className="text-slate-400 italic">No reason provided</span>}
+                      </td>
+                      <td className="px-6 py-4 text-sm text-slate-500 max-w-md truncate" title={fb.question}>
+                        {fb.question}
+                      </td>
                     </tr>
                   ))}
+                  {stats.feedback.length === 0 && (
+                    <tr><td colSpan={3} className="p-8 text-center text-slate-400">No user feedback received yet.</td></tr>
+                  )}
                 </tbody>
               </table>
             )}
