@@ -14,13 +14,13 @@ import cohere
 
 router = APIRouter()
 
-# --- CONFIG ---
+# --- CONFIGURATION & LOG PATHS ---
 GAP_LOG_FILE = "/tmp/gap_logs.json"
 FEEDBACK_LOG_FILE = "/tmp/feedback_logs.json"
 DOC_USAGE_LOG_FILE = "/tmp/doc_usage_logs.json"
 CACHE_NAMESPACE = "semantic-cache"
 
-# --- INITIALIZATION ---
+# --- CORE AI INITIALIZATION ---
 try:
     pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
     index = pc.Index(os.getenv("PINECONE_INDEX_NAME"))
@@ -28,9 +28,12 @@ try:
     groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
     cohere_key = os.getenv("COHERE_API_KEY", "8LT29K24AsAQZbJCYlvz4eHPTtN5duyZkQF1QtXw")
     cohere_client = cohere.Client(cohere_key) if cohere_key else None
+    print("✅ Chat Router: AI Pipeline Initialized")
 except Exception as e:
+    print(f"❌ Chat Router: Init Failure: {str(e)}")
     pc, index, openai_client, groq_client, cohere_client = None, None, None, None, None
 
+# --- MODELS ---
 class ChatRequest(BaseModel):
     message: str
     language: str = "English"
@@ -45,7 +48,9 @@ class FeedbackRequest(BaseModel):
     reason: str = ""
     suggested_questions: list = []
 
+# --- UTILITY FUNCTIONS ---
 def save_log(filepath, entry):
+    """Generic JSON logger with rotation for production stability."""
     try:
         logs = []
         if os.path.exists(filepath):
@@ -53,11 +58,12 @@ def save_log(filepath, entry):
                 content = f.read()
                 if content: logs = json.loads(content)
         logs.append(entry)
-        if len(logs) > 500: logs = logs[-500:]
+        if len(logs) > 500: logs = logs[-500:] # Retain recent 500 entries
         with open(filepath, "w") as f: json.dump(logs, f, indent=2)
     except Exception: pass
 
 def clean_citation(raw_source: str) -> str:
+    """Formats file paths into clean document titles for citations and admin tracking."""
     try:
         name = raw_source.split('/')[-1].rsplit('.', 1)[0]
         name = re.sub(r'(?i)_compress|-compress|_final_version|_\d_\d|nbsped|factsheet', '', name)
@@ -65,6 +71,7 @@ def clean_citation(raw_source: str) -> str:
         return ' '.join(name.replace('_', ' ').replace('-', ' ').split()).title()
     except: return "Medical Reference"
 
+# --- MAIN ENDPOINT ---
 @router.post("/chat")
 async def chat_endpoint(request: ChatRequest, background_tasks: BackgroundTasks):
     if not groq_client: raise HTTPException(500, "AI tools not initialized")
@@ -74,64 +81,64 @@ async def chat_endpoint(request: ChatRequest, background_tasks: BackgroundTasks)
         lab_summary = ""
         missing_params_text = ""
         
-        # 1. Search Logic
+        # 1. QUERY CONSTRUCTION
         if is_blood_work:
             lab_results = request.clinical_data.get("results", [])
             lab_summary = ", ".join([f"{r.get('name')}: {r.get('value')} {r.get('unit')}" for r in lab_results])
             treatment_context = request.treatment or "General Fertility"
             
+            # Identify missing fertility markers for the response prompt
             check_prompt = f"Review labs: {lab_summary}. Identify missing from: FSH, AMH, LH, Estradiol, TSH, Prolactin. Return list or 'COMPLETE'."
             try:
                 check_comp = groq_client.chat.completions.create(messages=[{"role": "user", "content": check_prompt}], model="llama-3.1-8b-instant", temperature=0.1)
                 missing = check_comp.choices[0].message.content.strip()
                 if "COMPLETE" not in missing.upper():
-                    missing_params_text = f"\n\nNote: Mention that {missing} are missing but crucial for a complete picture."
+                    missing_params_text = f"\n\nNote: Mention that {missing} are missing but essential for comprehensive fertility insight."
             except Exception: pass
-            search_query = f"Fertility lab analysis: {lab_summary} for {treatment_context}."
+            search_query = f"Clinical implications of labs {lab_summary} for patient on {treatment_context}."
         else:
             search_query = request.message
 
-        # 2. Embedding & Retrieval
+        # 2. RETRIEVAL & CITATION LOGGING
         emb_resp = openai_client.embeddings.create(input=[search_query], model="text-embedding-ada-002")
         vector = emb_resp.data[0].embedding
         search_resp = index.query(vector=vector, top_k=5, include_metadata=True)
         
-        context_text = ""
-        citations = []
-        highest_score = 0.0
+        context_text, citations, highest_score = "", [], 0.0
 
         for match in search_resp.matches:
             if match.score > highest_score: highest_score = match.score
+            # Log all documents used in context for admin dashboard tracking
             src = clean_citation(match.metadata.get('source', 'Medical Database'))
             context_text += f"Info from {src}: {match.metadata.get('text', '')}\n\n"
             if src not in citations: 
                 citations.append(src)
                 background_tasks.add_task(save_log, DOC_USAGE_LOG_FILE, {"timestamp": datetime.now().isoformat(), "document": src})
 
+        # Log Knowledge Gaps
         if highest_score < 0.3:
             background_tasks.add_task(save_log, GAP_LOG_FILE, {"timestamp": datetime.now().isoformat(), "question": search_query, "score": float(highest_score), "type": "Blood Work Gap" if is_blood_work else "General Gap"})
 
-        # 3. Dynamic Prompting (Marketing Tapering)
-        # We separate the marketing instruction from the medical depth instruction.
-        marketing_instruction = ""
+        # 3. DYNAMIC PROMPTING (Taper Promotion, Maintain Depth)
+        promo_rule = ""
         if request.interaction_count == 0:
-            marketing_instruction = "Mention Izana's personalized nutrition, exercise, and lifestyle modification plans as a way to improve these results."
+            promo_rule = "Include a brief recommendation to check Izana's personalized nutrition and lifestyle plans."
         else:
-            marketing_instruction = "STRICT: Do NOT promote Izana plans or mention the platform features. Focus exclusively on the medical/clinical explanation."
+            promo_rule = "STRICT: Do NOT mention Izana plans or provide platform promotion. Focus purely on medical explanation."
 
-        depth_instruction = "Provide a comprehensive, detailed medical explanation. Do NOT shorten your medical analysis because of previous interactions. Keep the response thorough and empathetic."
+        depth_instruction = "Provide a comprehensive, high-quality medical explanation. Maintain depth and detail regardless of interaction count."
 
         if is_blood_work:
-            system_prompt = f"""You are Izana AI. Context: simple, comforting couple-centric fertility lab analysis.
-            {marketing_instruction}
+            system_prompt = f"""You are Izana AI. Role: Couple-centric fertility lab analyst.
+            {promo_rule}
             {depth_instruction}
-            Target: {request.treatment or 'General'}. Labs: {lab_summary}. {missing_params_text}
-            CONTEXT FROM TEXTBOOKS: {context_text}"""
+            Target Path: {request.treatment}. Labs Provided: {lab_summary}. {missing_params_text}
+            KNOWLEDGE CONTEXT: {context_text}"""
         else:
-            system_prompt = f"""You are Izana AI. Answer strictly based on CONTEXT. 
-            {marketing_instruction}
+            system_prompt = f"""You are Izana AI. Role: Medical Information Assistant. 
+            {promo_rule}
             {depth_instruction}
-            CONTEXT FROM TEXTBOOKS: {context_text}"""
+            KNOWLEDGE CONTEXT: {context_text}"""
 
         draft_comp = groq_client.chat.completions.create(
             messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": request.message}],
@@ -140,10 +147,10 @@ async def chat_endpoint(request: ChatRequest, background_tasks: BackgroundTasks)
         )
         draft_response = draft_comp.choices[0].message.content
 
-        # 4. JSON Formatter (Smarter Follow-ups)
+        # 4. JSON FORMATTING & FOLLOW-UP GENERATION
         qc_prompt = f"""Return ONLY a JSON object. Language: {request.language}.
         Task: 1. Third-person only. 2. Plain text (no markdown). 3. Double blank lines between paragraphs.
-        4. Generate 3 specific follow-up questions that are the 'natural next step' for this user.
+        4. Generate 3 conversational follow-up questions relevant to this specific response.
         DRAFT: {draft_response}"""
         
         qc_comp = groq_client.chat.completions.create(
@@ -159,12 +166,15 @@ async def chat_endpoint(request: ChatRequest, background_tasks: BackgroundTasks)
             "suggested_questions": final_data.get("suggested_questions", []),
             "is_gap": highest_score < 0.3
         }
+
     except Exception as e:
         print(traceback.format_exc())
-        raise HTTPException(500, str(e))
+        raise HTTPException(500, "Internal Logic Error")
 
+# --- ADMIN METRICS ENDPOINT ---
 @router.get("/admin/stats")
 async def get_stats():
+    """Aggregates all tracker files for the Master Dashboard."""
     gaps, feedback, usage = [], [], []
     for log_file, target_list in [(GAP_LOG_FILE, gaps), (FEEDBACK_LOG_FILE, feedback), (DOC_USAGE_LOG_FILE, usage)]:
         if os.path.exists(log_file):
