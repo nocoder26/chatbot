@@ -2,6 +2,7 @@ import os
 import json
 import io
 import logging
+import asyncio
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -58,6 +59,20 @@ if not groq_api_key:
 client = Groq(api_key=groq_api_key) if groq_api_key else None
 
 BLOODWORK_MODEL = os.getenv("BLOODWORK_MODEL", "llama-3.3-70b-versatile")
+
+
+async def retry_api_call(func, max_retries=3, delay=1):
+    """Retry an API call with exponential backoff."""
+    for attempt in range(max_retries):
+        try:
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(None, func)
+        except Exception as e:
+            if attempt == max_retries - 1:
+                raise
+            wait_time = delay * (2 ** attempt)
+            logger.warning(f"API call failed (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {wait_time}s...")
+            await asyncio.sleep(wait_time)
 
 
 @app.get("/")
@@ -130,17 +145,72 @@ Return ONLY a JSON object in this exact format:
 Extract every test. If a test has no unit listed, use an empty string for unit.
 If you cannot find any lab results at all, return {{"results": []}}."""
 
-        chat_completion = client.chat.completions.create(
-            messages=[{"role": "user", "content": prompt}],
-            model=BLOODWORK_MODEL,
-            response_format={"type": "json_object"},
-            temperature=0.1
-        )
-
-        return json.loads(chat_completion.choices[0].message.content)
+        try:
+            chat_completion = await retry_api_call(
+                lambda: client.chat.completions.create(
+                    messages=[{"role": "user", "content": prompt}],
+                    model=BLOODWORK_MODEL,
+                    response_format={"type": "json_object"},
+                    temperature=0.1
+                ),
+                max_retries=3
+            )
+            
+            response_content = chat_completion.choices[0].message.content
+            if not response_content:
+                raise ValueError("Empty response from AI model")
+            
+            parsed_response = json.loads(response_content)
+            if "results" not in parsed_response:
+                raise ValueError("Invalid response format: missing 'results' key")
+            
+            return parsed_response
+            
+        except json.JSONDecodeError as e:
+            response_preview = response_content[:200] if 'response_content' in locals() and response_content else 'N/A'
+            logger.error(f"JSON parsing error: {e}. Response preview: {response_preview}")
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to parse AI response. The PDF may be too complex or corrupted."
+            )
+        except Exception as e:
+            error_msg = str(e)
+            logger.error(f"AI API call failed: {error_msg}", exc_info=True)
+            if "rate limit" in error_msg.lower() or "quota" in error_msg.lower():
+                raise HTTPException(
+                    status_code=503,
+                    detail="AI service is experiencing high demand. Please try again in a few moments."
+                )
+            elif "timeout" in error_msg.lower():
+                raise HTTPException(
+                    status_code=504,
+                    detail="Request timed out. The PDF may be too large or complex. Please try a smaller file."
+                )
+            else:
+                raise HTTPException(
+                    status_code=500,
+                    detail="AI service temporarily unavailable. Please try again."
+                )
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"PDF analysis error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to process the PDF file")
+        error_msg = str(e)
+        logger.error(f"PDF analysis error: {error_msg}", exc_info=True)
+        
+        # More specific error messages based on error type
+        if "PdfReader" in error_msg or "PDF" in error_msg or "corrupted" in error_msg.lower():
+            raise HTTPException(
+                status_code=400,
+                detail="The PDF file appears to be corrupted or invalid. Please try uploading a different file."
+            )
+        elif "memory" in error_msg.lower() or "too large" in error_msg.lower():
+            raise HTTPException(
+                status_code=413,
+                detail=f"File is too large to process. Maximum size is {MAX_UPLOAD_SIZE_MB}MB."
+            )
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to process the PDF file. Please ensure it's a valid PDF and try again."
+            )
