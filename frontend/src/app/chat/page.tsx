@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
-import { Send, ArrowLeft, Loader2, ChevronRight, Paperclip, Star, Heart, Users, UtensilsCrossed, TestTube, TrendingUp, Baby } from "lucide-react";
+import { Send, ArrowLeft, Loader2, ChevronRight, Paperclip, Star, Heart, Users, UtensilsCrossed, TestTube, TrendingUp } from "lucide-react";
 import BloodWorkConfirm from "@/components/BloodWorkConfirm";
 import {
   sendChatMessage,
