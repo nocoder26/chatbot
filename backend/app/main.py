@@ -42,8 +42,8 @@ if CORS_REGEX:
 elif ALLOWED_ORIGINS_RAW:
     cors_config["allow_origins"] = [o.strip() for o in ALLOWED_ORIGINS_RAW.split(",")]
 else:
-    cors_config["allow_origin_regex"] = r"https://.*\.vercel\.app|http://localhost:\d+"
-    logger.info("No CORS origins configured; defaulting to *.vercel.app + localhost")
+    cors_config["allow_origin_regex"] = r"https://.*\.vercel\.app|https://.*\.izana\.ai|http://localhost:\d+"
+    logger.info("No CORS origins configured; defaulting to *.vercel.app + *.izana.ai + localhost")
 
 app.add_middleware(CORSMiddleware, **cors_config)
 
