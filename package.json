@@ -1,0 +1,17 @@
+{
+  "private": true,
+  "name": "izana-ai",
+  "description": "Monorepo root — quality gate tooling only",
+  "scripts": {
+    "prepare": "husky",
+    "test:backend": "cd backend && python3 -m pytest tests/ -v",
+    "test:backend:quick": "cd backend && python3 -m pytest tests/ -q",
+    "test:backend:security": "cd backend && python3 -m pytest tests/test_security.py tests/test_admin.py -v",
+    "lint:frontend": "cd frontend && npx next lint",
+    "build:frontend": "cd frontend && npx next build",
+    "quality-gate": "bash scripts/smart-test.sh"
+  },
+  "devDependencies": {
+    "husky": "^9"
+  }
+}
