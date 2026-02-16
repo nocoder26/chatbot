@@ -33,13 +33,19 @@ ALLOWED_ORIGINS = os.getenv(
     "http://localhost:3000,http://localhost:8000"
 ).split(",")
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[origin.strip() for origin in ALLOWED_ORIGINS],
-    allow_credentials=True,
-    allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type", "Authorization", "X-Admin-Key"],
-)
+CORS_REGEX = os.getenv("ALLOWED_ORIGIN_REGEX", "")
+
+cors_config = {
+    "allow_credentials": True,
+    "allow_methods": ["GET", "POST"],
+    "allow_headers": ["Content-Type", "Authorization", "X-Admin-Key"],
+}
+if CORS_REGEX:
+    cors_config["allow_origin_regex"] = CORS_REGEX
+else:
+    cors_config["allow_origins"] = [origin.strip() for origin in ALLOWED_ORIGINS]
+
+app.add_middleware(CORSMiddleware, **cors_config)
 
 # --- CONNECT ROUTERS ---
 app.include_router(chat.router)
