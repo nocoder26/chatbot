@@ -325,15 +325,15 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest, background_
                 )
 
         if highest_score < GAP_SCORE_THRESHOLD:
-            background_tasks.add_task(
-                save_log, GAP_LOG_FILE,
-                {
-                    "timestamp": datetime.now().isoformat(),
-                    "question": search_query,
-                    "score": float(highest_score),
-                    "type": "Blood Work Gap" if is_blood_work else "Gap"
-                }
-            )
+            gap_entry = {
+                "timestamp": datetime.now().isoformat(),
+                "question": search_query,
+                "score": float(highest_score),
+                "type": "Blood Work Gap" if is_blood_work else "Gap",
+                "language": chat_request.language
+            }
+            logger.info(f"Knowledge gap detected: score={highest_score:.3f}, question='{search_query[:100]}...', type={gap_entry['type']}")
+            background_tasks.add_task(save_log, GAP_LOG_FILE, gap_entry)
 
         # 3. GENERATE RESPONSE
         system_prompt = f"""You are Izana AI, a medical information assistant specialized in reproductive health and fertility treatment for couples.
@@ -397,6 +397,19 @@ Draft to process:
 
             if not res_text or len(str(res_text)) < 10:
                 raise ValueError("Incomplete model output from QC step")
+            
+            # Ensure questions are in the correct language - translate if needed
+            if language_name != "English":
+                # Check if questions need translation (simple heuristic: if they contain English words)
+                # Always translate to ensure consistency
+                translated_qs = []
+                for q in res_qs[:3]:
+                    if q and len(q.strip()) > 0:
+                        translated_q = await translate_with_groq(q, language_name)
+                        translated_qs.append(translated_q)
+                    else:
+                        translated_qs.append(q)
+                res_qs = translated_qs[:3]
 
         except Exception as e:
             logger.warning(f"QC formatting failed, using draft: {e}")
@@ -407,15 +420,20 @@ Draft to process:
                 "How can we improve our chances of success with fertility treatment?",
                 "What lifestyle changes can help support our fertility treatment?"
             ]
+            # Translate fallback questions if needed
+            if language_name != "English":
+                translated_qs = []
+                for q in res_qs:
+                    translated_q = await translate_with_groq(q, language_name)
+                    translated_qs.append(translated_q)
+                res_qs = translated_qs
 
-        # 5. TRANSLATE IF NEEDED
+        # 5. TRANSLATE RESPONSE TEXT IF NEEDED
+        # Note: QC step should already generate in correct language, but translate as backup
         if language_name != "English":
+            # Only translate if response seems to be in English (backup safety)
+            # For now, always translate to ensure consistency
             res_text = await translate_with_groq(res_text, language_name)
-            translated_qs = []
-            for q in res_qs[:3]:
-                translated_q = await translate_with_groq(q, language_name)
-                translated_qs.append(translated_q)
-            res_qs = translated_qs
 
         clean_text = re.sub(r'[*#]+', '', str(res_text)).strip()
 
