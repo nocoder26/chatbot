@@ -10,7 +10,6 @@ from fastapi import APIRouter, HTTPException, BackgroundTasks, Request
 from pydantic import BaseModel, Field
 from pinecone import Pinecone
 from openai import OpenAI
-from groq import Groq
 import cohere
 from slowapi import Limiter
 from slowapi.util import get_remote_address
@@ -28,8 +27,8 @@ MAX_MESSAGE_LENGTH = int(os.getenv("MAX_MESSAGE_LENGTH", "2000"))
 RERANK_TOP_N = int(os.getenv("RERANK_TOP_N", "3"))
 CACHE_NAMESPACE = "semantic-cache"
 
-DRAFT_MODEL = os.getenv("DRAFT_MODEL", "llama-3.3-70b-versatile")
-QC_MODEL = os.getenv("QC_MODEL", "llama-3.1-8b-instant")
+DRAFT_MODEL = os.getenv("DRAFT_MODEL", "gpt-4o-mini")
+QC_MODEL = os.getenv("QC_MODEL", "gpt-4o-mini")
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-ada-002")
 
 # --- LANGUAGE MAPPING ---
@@ -47,7 +46,6 @@ SUPPORTED_LANGUAGES = {
 pc = None
 index = None
 openai_client = None
-groq_client = None
 cohere_client = None
 
 try:
@@ -66,13 +64,6 @@ try:
         logger.info("OpenAI initialized")
     else:
         logger.warning("OpenAI not configured (missing OPENAI_API_KEY)")
-
-    groq_key = os.getenv("GROQ_API_KEY")
-    if groq_key:
-        groq_client = Groq(api_key=groq_key)
-        logger.info("Groq initialized")
-    else:
-        logger.warning("Groq not configured (missing GROQ_API_KEY)")
 
     cohere_key = os.getenv("COHERE_API_KEY")
     if cohere_key:
@@ -188,9 +179,9 @@ def rerank_results(query: str, documents: list) -> list:
         return documents
 
 
-async def translate_with_groq(text: str, target_language: str) -> str:
-    """Translate text using Groq LLM for supported languages."""
-    if not groq_client or target_language == "English":
+async def translate_with_openai(text: str, target_language: str) -> str:
+    """Translate text using OpenAI LLM for supported languages."""
+    if not openai_client or target_language == "English":
         return text
 
     try:
@@ -200,11 +191,14 @@ Preserve all medical terminology accurately. Return ONLY the translated text wit
 Text to translate:
 {text}"""
 
-        completion = groq_client.chat.completions.create(
-            messages=[{"role": "user", "content": translation_prompt}],
-            model=QC_MODEL,
-            temperature=0.1,
-            max_tokens=2000
+        completion = await retry_api_call(
+            lambda: openai_client.chat.completions.create(
+                model=QC_MODEL,
+                messages=[{"role": "user", "content": translation_prompt}],
+                temperature=0.1,
+                max_tokens=2000
+            ),
+            max_retries=2
         )
         translated = completion.choices[0].message.content.strip()
         if translated and len(translated) > 5:
@@ -235,7 +229,7 @@ limiter = Limiter(key_func=get_remote_address)
 
 @router.post("/chat", response_model=ChatResponse)
 async def chat_endpoint(request: Request, chat_request: ChatRequest, background_tasks: BackgroundTasks):
-    if not groq_client or not openai_client or not index:
+    if not openai_client or not index:
         raise HTTPException(status_code=503, detail="AI services not fully initialized")
 
     try:
@@ -261,9 +255,9 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest, background_
             )
             try:
                 check_comp = await retry_api_call(
-                    lambda: groq_client.chat.completions.create(
-                        messages=[{"role": "user", "content": check_prompt}],
+                    lambda: openai_client.chat.completions.create(
                         model=QC_MODEL,
+                        messages=[{"role": "user", "content": check_prompt}],
                         temperature=0.1,
                         max_tokens=100
                     ),
@@ -342,12 +336,12 @@ CONTEXT FROM MEDICAL KNOWLEDGE BASE:
 
         try:
             draft_comp = await retry_api_call(
-                lambda: groq_client.chat.completions.create(
+                lambda: openai_client.chat.completions.create(
+                    model=DRAFT_MODEL,
                     messages=[
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": search_query}
                     ],
-                    model=DRAFT_MODEL,
                     temperature=0.3
                 ),
                 max_retries=3
@@ -374,9 +368,9 @@ Draft to process:
 {draft_response}"""
 
             qc_comp = await retry_api_call(
-                lambda: groq_client.chat.completions.create(
-                    messages=[{"role": "user", "content": qc_prompt}],
+                lambda: openai_client.chat.completions.create(
                     model=QC_MODEL,
+                    messages=[{"role": "user", "content": qc_prompt}],
                     response_format={"type": "json_object"},
                     temperature=0.2,
                     max_tokens=2000
@@ -401,10 +395,10 @@ Draft to process:
 
         # 5. TRANSLATE IF NEEDED
         if language_name != "English":
-            res_text = await translate_with_groq(res_text, language_name)
+            res_text = await translate_with_openai(res_text, language_name)
             translated_qs = []
             for q in res_qs[:3]:
-                translated_q = await translate_with_groq(q, language_name)
+                translated_q = await translate_with_openai(q, language_name)
                 translated_qs.append(translated_q)
             res_qs = translated_qs
 

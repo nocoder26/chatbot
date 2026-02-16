@@ -1,7 +1,7 @@
 """
 Translation utilities for Izana AI.
 
-Primary translation is handled by Groq LLM in chat.py.
+Primary translation is handled by OpenAI LLM in chat.py.
 This module is retained for potential RunPod-based translation as a future alternative.
 """
 
