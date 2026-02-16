@@ -107,12 +107,17 @@ async def analyze_bloodwork(request: Request, file: UploadFile = File(...)):
                 "error": "Could not extract any text from the PDF. It might be a scanned image without OCR."
             }
 
-        max_text_length = 8000
+        max_text_length = 15000
         if len(extracted_text) > max_text_length:
             extracted_text = extracted_text[:max_text_length]
 
-        prompt = f"""You are a medical data extractor. Read the following raw text extracted from a patient's blood/lab test report.
-Extract ALL blood test values (like FSH, AMH, LH, Estradiol, TSH, Prolactin, etc.) and their specific units.
+        prompt = f"""You are a medical lab data extractor. Your task is to extract EVERY SINGLE test result from the following blood/lab report text.
+
+CRITICAL INSTRUCTIONS:
+- Extract ALL test results found in the report, not just fertility-related ones.
+- Include complete blood count (CBC), metabolic panel, thyroid, hormones, vitamins, lipids, liver function, kidney function, and any other tests present.
+- For each test, extract the test name, numeric value, and unit exactly as shown.
+- Do NOT skip any test. Do NOT summarize. Extract every individual line item.
 
 RAW TEXT FROM REPORT:
 ---
@@ -120,8 +125,10 @@ RAW TEXT FROM REPORT:
 ---
 
 Return ONLY a JSON object in this exact format:
-{{"results": [{{"name": "FSH", "value": "5.4", "unit": "mIU/mL"}}, {{"name": "AMH", "value": "1.2", "unit": "ng/mL"}}]}}
-If you cannot find any lab results, return {{"results": []}}. Do not include any other text."""
+{{"results": [{{"name": "TEST NAME", "value": "NUMERIC VALUE", "unit": "UNIT"}}, ...]}}
+
+Extract every test. If a test has no unit listed, use an empty string for unit.
+If you cannot find any lab results at all, return {{"results": []}}."""
 
         chat_completion = client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],

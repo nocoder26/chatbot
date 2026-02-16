@@ -9,7 +9,14 @@ logger = logging.getLogger("izana.admin")
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
-ADMIN_API_KEY = os.getenv("ADMIN_API_KEY", "")
+import hashlib
+
+_configured_key = os.getenv("ADMIN_API_KEY", "")
+if _configured_key:
+    ADMIN_API_KEY = _configured_key
+else:
+    _pin = os.getenv("ADMIN_PIN", "2603")
+    ADMIN_API_KEY = hashlib.sha256(f"izana-admin-{_pin}".encode()).hexdigest()[:32]
 
 # --- TRACKING FILES ---
 GAP_LOG_FILE = os.getenv("GAP_LOG_FILE", "/tmp/gap_logs.json")

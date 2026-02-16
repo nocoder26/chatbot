@@ -501,7 +501,7 @@ export default function AdminPage() {
 
   useEffect(() => {
     const savedKey = localStorage.getItem("izana_admin_key");
-    if (savedKey) {
+    if (savedKey !== null && savedKey.length > 0) {
       setAdminKey(savedKey);
     }
     setChecking(false);
@@ -509,7 +509,7 @@ export default function AdminPage() {
 
   if (checking) return null;
 
-  return adminKey ? (
+  return adminKey !== null ? (
     <Dashboard adminKey={adminKey} />
   ) : (
     <PinEntry onSuccess={(key) => setAdminKey(key)} />
