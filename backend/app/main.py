@@ -28,11 +28,7 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # --- CORS SETTINGS ---
-ALLOWED_ORIGINS = os.getenv(
-    "ALLOWED_ORIGINS",
-    "http://localhost:3000,http://localhost:8000"
-).split(",")
-
+ALLOWED_ORIGINS_RAW = os.getenv("ALLOWED_ORIGINS", "")
 CORS_REGEX = os.getenv("ALLOWED_ORIGIN_REGEX", "")
 
 cors_config = {
@@ -40,10 +36,14 @@ cors_config = {
     "allow_methods": ["GET", "POST"],
     "allow_headers": ["Content-Type", "Authorization", "X-Admin-Key"],
 }
+
 if CORS_REGEX:
     cors_config["allow_origin_regex"] = CORS_REGEX
+elif ALLOWED_ORIGINS_RAW:
+    cors_config["allow_origins"] = [o.strip() for o in ALLOWED_ORIGINS_RAW.split(",")]
 else:
-    cors_config["allow_origins"] = [origin.strip() for origin in ALLOWED_ORIGINS]
+    cors_config["allow_origin_regex"] = r"https://.*\.vercel\.app|http://localhost:\d+"
+    logger.info("No CORS origins configured; defaulting to *.vercel.app + localhost")
 
 app.add_middleware(CORSMiddleware, **cors_config)
 
