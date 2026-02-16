@@ -1,61 +1,114 @@
 import os
 import json
 import uuid
-import traceback
+import logging
 import re
-from datetime import datetime, timedelta
-from fastapi import APIRouter, HTTPException, BackgroundTasks
-from pydantic import BaseModel
+from datetime import datetime
+from typing import Optional, List, Dict, Any
+from fastapi import APIRouter, HTTPException, BackgroundTasks, Request
+from pydantic import BaseModel, Field
 from pinecone import Pinecone
 from openai import OpenAI
 from groq import Groq
-import cohere  
+import cohere
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+
+logger = logging.getLogger("izana.chat")
 
 router = APIRouter()
 
-# --- CONFIG ---
-GAP_LOG_FILE = "/tmp/gap_logs.json"
-FEEDBACK_LOG_FILE = "/tmp/feedback_logs.json"
+# --- CONFIGURATION ---
+GAP_LOG_FILE = os.getenv("GAP_LOG_FILE", "/tmp/gap_logs.json")
+FEEDBACK_LOG_FILE = os.getenv("FEEDBACK_LOG_FILE", "/tmp/feedback_logs.json")
+DOC_USAGE_LOG_FILE = os.getenv("DOC_USAGE_LOG_FILE", "/tmp/doc_usage_logs.json")
+GAP_SCORE_THRESHOLD = float(os.getenv("GAP_SCORE_THRESHOLD", "0.3"))
+MAX_MESSAGE_LENGTH = int(os.getenv("MAX_MESSAGE_LENGTH", "2000"))
+RERANK_TOP_N = int(os.getenv("RERANK_TOP_N", "3"))
 CACHE_NAMESPACE = "semantic-cache"
 
-# --- INITIALIZATION ---
-try:
-    pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
-    index = pc.Index(os.getenv("PINECONE_INDEX_NAME"))
-    openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-    groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-    cohere_key = os.getenv("COHERE_API_KEY", "8LT29K24AsAQZbJCYlvz4eHPTtN5duyZkQF1QtXw")
-    cohere_client = cohere.Client(cohere_key) if cohere_key else None
-    print("✅ STARTUP SUCCESS: Fail-Safe AI Pipeline Ready")
-except Exception as e:
-    print(f"❌ STARTUP FAILED: {str(e)}")
-    pc, index, openai_client, groq_client, cohere_client = None, None, None, None, None
+DRAFT_MODEL = os.getenv("DRAFT_MODEL", "llama-3.3-70b-versatile")
+QC_MODEL = os.getenv("QC_MODEL", "llama-3.1-8b-instant")
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-ada-002")
 
+# --- LANGUAGE MAPPING ---
+SUPPORTED_LANGUAGES = {
+    "en": "English",
+    "ta": "Tamil",
+    "hi": "Hindi",
+    "te": "Telugu",
+    "ml": "Malayalam",
+    "es": "Spanish",
+    "ja": "Japanese",
+}
+
+# --- CORE AI INITIALIZATION ---
+pc = None
+index = None
+openai_client = None
+groq_client = None
+cohere_client = None
+
+try:
+    pinecone_key = os.getenv("PINECONE_API_KEY")
+    pinecone_index = os.getenv("PINECONE_INDEX_NAME")
+    if pinecone_key and pinecone_index:
+        pc = Pinecone(api_key=pinecone_key)
+        index = pc.Index(pinecone_index)
+        logger.info("Pinecone initialized")
+    else:
+        logger.warning("Pinecone not configured (missing PINECONE_API_KEY or PINECONE_INDEX_NAME)")
+
+    openai_key = os.getenv("OPENAI_API_KEY")
+    if openai_key:
+        openai_client = OpenAI(api_key=openai_key)
+        logger.info("OpenAI initialized")
+    else:
+        logger.warning("OpenAI not configured (missing OPENAI_API_KEY)")
+
+    groq_key = os.getenv("GROQ_API_KEY")
+    if groq_key:
+        groq_client = Groq(api_key=groq_key)
+        logger.info("Groq initialized")
+    else:
+        logger.warning("Groq not configured (missing GROQ_API_KEY)")
+
+    cohere_key = os.getenv("COHERE_API_KEY")
+    if cohere_key:
+        cohere_client = cohere.ClientV2(api_key=cohere_key)
+        logger.info("Cohere reranker initialized")
+    else:
+        logger.warning("Cohere not configured (missing COHERE_API_KEY) - reranking disabled")
+
+except Exception as e:
+    logger.error(f"Critical initialization error: {e}", exc_info=True)
+
+
+# --- REQUEST/RESPONSE MODELS ---
 class ChatRequest(BaseModel):
-    message: str
-    language: str = "English"
+    message: str = Field(..., max_length=MAX_MESSAGE_LENGTH)
+    language: str = Field(default="en", description="ISO language code")
+    clinical_data: Optional[Dict[str, Any]] = None
+    treatment: Optional[str] = None
+
 
 class FeedbackRequest(BaseModel):
-    question: str
+    question: str = Field(..., max_length=MAX_MESSAGE_LENGTH)
     answer: str
-    rating: int
+    rating: int = Field(..., ge=1, le=5)
     reason: str = ""
     suggested_questions: list = []
 
-def cleanup_logs():
-    try:
-        cutoff = datetime.now() - timedelta(hours=24)
-        for filepath in [GAP_LOG_FILE, FEEDBACK_LOG_FILE]:
-            if os.path.exists(filepath):
-                with open(filepath, "r") as f:
-                    logs = json.load(f)
-                new_logs = [log for log in logs if datetime.fromisoformat(log["timestamp"]) > cutoff]
-                with open(filepath, "w") as f:
-                    json.dump(new_logs, f, indent=2)
-    except Exception:
-        pass
 
-def save_log(filepath, entry):
+class ChatResponse(BaseModel):
+    response: str
+    citations: List[str]
+    suggested_questions: List[str]
+
+
+# --- UTILITIES ---
+def save_log(filepath: str, entry: dict) -> None:
+    """JSON logger with rotation for production stability."""
     try:
         logs = []
         if os.path.exists(filepath):
@@ -64,187 +117,279 @@ def save_log(filepath, entry):
                 if content:
                     logs = json.loads(content)
         logs.append(entry)
-        if len(logs) > 100: logs = logs[-100:]
+        if len(logs) > 500:
+            logs = logs[-500:]
         with open(filepath, "w") as f:
             json.dump(logs, f, indent=2)
-    except Exception:
-        pass
+    except (json.JSONDecodeError, OSError) as e:
+        logger.error(f"Failed to write log to {filepath}: {e}")
+
 
 def clean_citation(raw_source: str) -> str:
+    """Formats file paths into clean document titles for citations."""
+    if not raw_source:
+        return "Medical Reference"
     try:
-        name = raw_source.split('/')[-1]
-        name = name.rsplit('.', 1)[0]
+        name = raw_source.split('/')[-1].rsplit('.', 1)[0]
         name = re.sub(r'(?i)_compress|-compress|_final_version|_\d_\d|nbsped|factsheet', '', name)
-        name = re.sub(r'\d{8,}', '', name) 
-        name = name.replace('_', ' ').replace('-', ' ')
-        return ' '.join(name.split()).title()
-    except:
-        return "Medical Reference Document"
+        name = re.sub(r'\d{8,}', '', name)
+        return ' '.join(name.replace('_', ' ').replace('-', ' ').split()).title()
+    except Exception as e:
+        logger.warning(f"Citation cleaning failed for '{raw_source}': {e}")
+        return "Medical Reference"
 
-@router.post("/chat")
-async def chat_endpoint(request: ChatRequest, background_tasks: BackgroundTasks):
-    if not groq_client: raise HTTPException(500, "AI tools not initialized")
-    background_tasks.add_task(cleanup_logs)
+
+def sanitize_input(text: str) -> str:
+    """Basic input sanitization to reduce prompt injection risk."""
+    danger_patterns = [
+        r'(?i)ignore\s+(all\s+)?(previous|above|prior)\s+(instructions?|prompts?|rules?)',
+        r'(?i)you\s+are\s+now\s+',
+        r'(?i)system\s*:\s*',
+        r'(?i)forget\s+(everything|all|your)',
+        r'(?i)new\s+instructions?\s*:',
+        r'(?i)override\s+(your|the|all)',
+    ]
+    cleaned = text
+    for pattern in danger_patterns:
+        cleaned = re.sub(pattern, '[filtered]', cleaned)
+    return cleaned.strip()
+
+
+def rerank_results(query: str, documents: list) -> list:
+    """Use Cohere to rerank search results for better relevance."""
+    if not cohere_client or not documents:
+        return documents
 
     try:
-        # 1. MULTI-QUERY
-        try:
-            mq_prompt = f"Generate 2 alternative search queries to maximize medical document retrieval for: '{request.message}'. Return ONLY the 2 queries separated by a newline."
-            mq_completion = groq_client.chat.completions.create(
-                messages=[{"role": "user", "content": mq_prompt}],
-                model="llama-3.1-8b-instant",
-                temperature=0.2
-            )
-            expanded_queries = [request.message] + [q.strip() for q in mq_completion.choices[0].message.content.split('\n') if q.strip()]
-            expanded_queries = expanded_queries[:3]
-        except Exception:
-            expanded_queries = [request.message] 
+        doc_texts = [
+            doc.metadata.get('text', '') for doc in documents if doc.metadata.get('text')
+        ]
+        if not doc_texts:
+            return documents
 
-        # 2. EMBEDDING
-        emb_resp = openai_client.embeddings.create(input=expanded_queries, model="text-embedding-ada-002")
-        vectors = [item.embedding for item in emb_resp.data]
-
-        # 3. CACHE CHECK
-        cache_resp = index.query(namespace=CACHE_NAMESPACE, vector=vectors[0], top_k=1, include_metadata=True)
-        if cache_resp.matches and cache_resp.matches[0].score > 0.95:
-            cached_meta = cache_resp.matches[0].metadata
-            try: cached_qs = json.loads(cached_meta.get("suggested_questions", "[]"))
-            except: cached_qs = []
-            return {
-                "response": cached_meta["response"],
-                "citations": ["Verified Community Answer"],
-                "suggested_questions": cached_qs,
-                "is_gap": False
-            }
-
-        # 4. RETRIEVAL
-        unique_docs = {}
-        for vec in vectors:
-            search_resp = index.query(vector=vec, top_k=4, include_metadata=True)
-            for match in search_resp.matches:
-                unique_docs[match.id] = match
-                
-        doc_texts, doc_sources = [], []
-        for match in unique_docs.values():
-            txt = match.metadata.get('text', '')
-            if txt not in doc_texts:
-                doc_texts.append(txt)
-                doc_sources.append(match.metadata.get('source', 'Medical Database'))
-
-        context_text, citations, highest_score = "", [], 0.0
-
-        # 5. RERANKING
-        try:
-            if cohere_client and doc_texts:
-                rerank_resp = cohere_client.rerank(model="rerank-multilingual-v3.0", query=request.message, documents=doc_texts, top_n=4)
-                for r in rerank_resp.results:
-                    if r.relevance_score > highest_score: highest_score = r.relevance_score
-                    if r.relevance_score > 0.3:
-                        idx = r.index
-                        src = clean_citation(doc_sources[idx])
-                        context_text += f"Info from {src}: {doc_texts[idx]}\n\n"
-                        if src not in citations: citations.append(src)
-        except Exception:
-            sorted_matches = sorted(unique_docs.values(), key=lambda x: x.score, reverse=True)
-            highest_score = sorted_matches[0].score if sorted_matches else 0.0
-            for match in sorted_matches[:4]:
-                if match.score > 0.75:
-                    src = clean_citation(match.metadata.get("source", "Medical Database"))
-                    context_text += f"Info from {src}: {match.metadata.get('text', '')}\n\n"
-                    if src not in citations: citations.append(src)
-
-        is_gap = highest_score < 0.3
-        if is_gap:
-            background_tasks.add_task(save_log, GAP_LOG_FILE, {"timestamp": datetime.now().isoformat(), "question": request.message, "score": float(highest_score), "type": "Gap"})
-            context_text += "Note: Medical database limited. Use general medical knowledge.\n"
-
-        # 6. DRAFT (70B) 
-        draft_prompt = f"""
-        Answer the following medical question based strictly on the CONTEXT. Language: {request.language}.
-        
-        CRITICAL RULES:
-        1. NO FIRST-PERSON PRONOUNS. Do not use "we", "our", "us", or "I". Talk in the third person plural (e.g., "healthcare providers", "clinics", "they").
-        2. NO EM-DASHES. Do not use —.
-        3. PLAIN TEXT ONLY. DO NOT use markdown, bold, or asterisks.
-        4. NO CANCER MENTIONS unless explicitly asked.
-        5. CONCISE: Be direct. Do not loop or repeat yourself.
-        
-        CONTEXT: {context_text}
-        """
-        draft_completion = groq_client.chat.completions.create(
-            messages=[{"role": "system", "content": draft_prompt}, {"role": "user", "content": request.message}],
-            model="llama-3.3-70b-versatile",
-            temperature=0.2,
-            max_tokens=600, # Prevents runaway generation
-            frequency_penalty=0.4 # PREVENTS REPETITION LOOPS
+        rerank_response = cohere_client.rerank(
+            model="rerank-v3.5",
+            query=query,
+            documents=doc_texts,
+            top_n=min(RERANK_TOP_N, len(doc_texts))
         )
-        draft_response = draft_completion.choices[0].message.content
 
-        # 7. QC FORMATTER (8B) 
-        try:
-            qc_prompt = f"""
-            You are a JSON formatting tool. Read the DRAFT RESPONSE below.
-            Language: {request.language}.
+        reranked = []
+        for result in rerank_response.results:
+            original_match = documents[result.index]
+            original_match.score = result.relevance_score
+            reranked.append(original_match)
 
-            TASK:
-            1. Keep the exact tone of the draft. STRICTLY use third-person ("healthcare providers", "they").
-            2. Remove any bullet points, asterisks (*), bold marks (**), or em-dashes (—). Plain text ONLY.
-            3. Break the text into short, easy-to-read paragraphs separated by double blank lines.
-            4. Generate 3 clickable leading questions.
-            5. CRITICAL: DO NOT repeat any sentences. Stop generating when the thought is complete.
-            
-            DRAFT RESPONSE:
-            {draft_response}
-
-            OUTPUT FORMAT:
-            Return ONLY a JSON object:
-            {{
-                "revised_response": "The plain text response here. A SINGLE STRING.",
-                "suggested_questions": ["Q1", "Q2", "Q3"]
-            }}
-            """
-            qc_completion = groq_client.chat.completions.create(
-                messages=[{"role": "system", "content": qc_prompt}],
-                model="llama-3.1-8b-instant",
-                temperature=0.3,
-                max_tokens=600,
-                frequency_penalty=0.6, # STRICTLY PREVENTS REPETITION LOOPS
-                presence_penalty=0.2,
-                response_format={"type": "json_object"}
-            )
-            final_data = json.loads(qc_completion.choices[0].message.content)
-            
-            raw_response = final_data.get("revised_response", draft_response)
-            if isinstance(raw_response, list):
-                final_response = "\n\n".join([str(p) for p in raw_response])
-            elif isinstance(raw_response, dict):
-                final_response = "\n\n".join([str(v) for v in raw_response.values()])
-            else:
-                final_response = str(raw_response)
-                
-            final_response = final_response.replace("**", "").replace("*", "").replace("—", "-")
-                
-            suggested_questions = final_data.get("suggested_questions", [])
-            if not isinstance(suggested_questions, list):
-                suggested_questions = []
-
-        except Exception as e:
-            final_response = str(draft_response).replace("**", "").replace("*", "")
-            suggested_questions = ["What are the next steps?", "How long does the process take?", "Are there any side effects?"]
-
-        return {
-            "response": final_response,
-            "citations": citations,
-            "is_gap": is_gap,
-            "suggested_questions": suggested_questions
-        }
+        return reranked
 
     except Exception as e:
-        print(traceback.format_exc())
-        raise HTTPException(500, str(e))
+        logger.warning(f"Reranking failed, using original order: {e}")
+        return documents
+
+
+async def translate_with_groq(text: str, target_language: str) -> str:
+    """Translate text using Groq LLM for supported languages."""
+    if not groq_client or target_language == "English":
+        return text
+
+    try:
+        translation_prompt = f"""Translate the following medical text into {target_language}. 
+Preserve all medical terminology accurately. Return ONLY the translated text with no extra explanation.
+
+Text to translate:
+{text}"""
+
+        completion = groq_client.chat.completions.create(
+            messages=[{"role": "user", "content": translation_prompt}],
+            model=QC_MODEL,
+            temperature=0.1,
+            max_tokens=2000
+        )
+        translated = completion.choices[0].message.content.strip()
+        if translated and len(translated) > 5:
+            return translated
+        return text
+    except Exception as e:
+        logger.warning(f"Translation to {target_language} failed: {e}")
+        return text
+
+
+# --- MAIN CHAT ENDPOINT ---
+limiter = Limiter(key_func=get_remote_address)
+
+
+@router.post("/chat", response_model=ChatResponse)
+async def chat_endpoint(request: Request, chat_request: ChatRequest, background_tasks: BackgroundTasks):
+    if not groq_client or not openai_client or not index:
+        raise HTTPException(status_code=503, detail="AI services not fully initialized")
+
+    try:
+        is_blood_work = chat_request.clinical_data is not None
+        lab_summary = ""
+        missing_params_text = ""
+        language_name = SUPPORTED_LANGUAGES.get(chat_request.language, "English")
+        user_message = sanitize_input(chat_request.message)
+
+        # 1. BUILD SEARCH QUERY
+        if is_blood_work:
+            lab_results = chat_request.clinical_data.get("results", [])
+            lab_summary = ", ".join([
+                f"{r.get('name')}: {r.get('value')} {r.get('unit')}"
+                for r in lab_results
+            ])
+            search_query = f"Clinical implications of fertility labs: {lab_summary} for {chat_request.treatment or 'fertility'}."
+
+            check_prompt = (
+                f"Check labs: {lab_summary}. "
+                "Identify any missing from: FSH, AMH, LH, Estradiol, TSH, Prolactin. "
+                "Return the missing names as a comma-separated list, or 'COMPLETE' if all present."
+            )
+            try:
+                check_comp = groq_client.chat.completions.create(
+                    messages=[{"role": "user", "content": check_prompt}],
+                    model=QC_MODEL,
+                    temperature=0.1,
+                    max_tokens=100
+                )
+                missing = check_comp.choices[0].message.content.strip()
+                if "COMPLETE" not in missing.upper():
+                    missing_params_text = (
+                        f"\n\nNote: Gently inform the user that {missing} are missing "
+                        "but are important for a comprehensive evaluation."
+                    )
+            except Exception as e:
+                logger.warning(f"Missing marker check failed: {e}")
+        else:
+            search_query = user_message
+
+        # 2. SEMANTIC SEARCH + RERANKING
+        emb_resp = openai_client.embeddings.create(
+            input=[search_query],
+            model=EMBEDDING_MODEL
+        )
+        vector = emb_resp.data[0].embedding
+        search_resp = index.query(vector=vector, top_k=8, include_metadata=True)
+
+        reranked_matches = rerank_results(search_query, search_resp.matches)
+
+        context_text = ""
+        citations = []
+        highest_score = 0.0
+
+        for match in reranked_matches:
+            score = match.score if hasattr(match, 'score') else 0.0
+            if score > highest_score:
+                highest_score = score
+            src = clean_citation(match.metadata.get('source', 'Medical Database'))
+            context_text += f"From {src}: {match.metadata.get('text', '')}\n\n"
+            if src not in citations:
+                citations.append(src)
+                background_tasks.add_task(
+                    save_log, DOC_USAGE_LOG_FILE,
+                    {"timestamp": datetime.now().isoformat(), "document": src}
+                )
+
+        if highest_score < GAP_SCORE_THRESHOLD:
+            background_tasks.add_task(
+                save_log, GAP_LOG_FILE,
+                {
+                    "timestamp": datetime.now().isoformat(),
+                    "question": search_query,
+                    "score": float(highest_score),
+                    "type": "Blood Work Gap" if is_blood_work else "Gap"
+                }
+            )
+
+        # 3. GENERATE RESPONSE
+        system_prompt = f"""You are Izana AI, a medical information assistant specialized in reproductive health and fertility.
+Always provide detailed, evidence-based medical context. Speak in the third-person plural ("we recommend", "patients should").
+Always include a disclaimer that this is informational and not a substitute for professional medical advice.
+
+CONTEXT FROM MEDICAL KNOWLEDGE BASE:
+{context_text}
+{missing_params_text}"""
+
+        draft_comp = groq_client.chat.completions.create(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": search_query}
+            ],
+            model=DRAFT_MODEL,
+            temperature=0.3
+        )
+        draft_response = draft_comp.choices[0].message.content
+
+        # 4. STRUCTURED OUTPUT WITH FOLLOW-UP QUESTIONS
+        try:
+            qc_prompt = f"""Return ONLY a valid JSON object with this structure:
+{{"revised_response": "the full medical response text", "suggested_questions": ["question 1", "question 2", "question 3"]}}
+
+Rules:
+- revised_response: Clean up the draft. Remove all markdown formatting (**, *, #). Keep it professional and thorough.
+- suggested_questions: Generate exactly 3 relevant follow-up questions the patient might ask next based on the topic.
+- Language: Respond in {language_name}.
+
+Draft to process:
+{draft_response}"""
+
+            qc_comp = groq_client.chat.completions.create(
+                messages=[{"role": "user", "content": qc_prompt}],
+                model=QC_MODEL,
+                response_format={"type": "json_object"},
+                temperature=0.2,
+                max_tokens=2000
+            )
+            final_data = json.loads(qc_comp.choices[0].message.content)
+            res_text = final_data.get("revised_response", "")
+            res_qs = final_data.get("suggested_questions", [])
+
+            if not res_text or len(str(res_text)) < 10:
+                raise ValueError("Incomplete model output from QC step")
+
+        except Exception as e:
+            logger.warning(f"QC formatting failed, using draft: {e}")
+            res_text = draft_response
+            res_qs = [
+                "What are the next steps for my treatment?",
+                "How does lifestyle affect these results?",
+                "What other tests should I consider?"
+            ]
+
+        # 5. TRANSLATE IF NEEDED
+        if language_name != "English":
+            res_text = await translate_with_groq(res_text, language_name)
+            translated_qs = []
+            for q in res_qs[:3]:
+                translated_q = await translate_with_groq(q, language_name)
+                translated_qs.append(translated_q)
+            res_qs = translated_qs
+
+        clean_text = re.sub(r'[*#]+', '', str(res_text)).strip()
+
+        return ChatResponse(
+            response=clean_text,
+            citations=citations,
+            suggested_questions=res_qs[:3]
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Chat processing error: {e}", exc_info=True)
+        return ChatResponse(
+            response="We encountered a processing error. Could you please try asking your question again?",
+            citations=[],
+            suggested_questions=[
+                "What is IVF?",
+                "How to improve fertility?",
+                "Tell me about fertility testing."
+            ]
+        )
+
 
 @router.post("/feedback")
 async def submit_feedback(feedback: FeedbackRequest, background_tasks: BackgroundTasks):
+    """Submit feedback on a chat response. 5-star ratings are cached for future retrieval."""
     entry = {
         "timestamp": datetime.now().isoformat(),
         "rating": feedback.rating,
@@ -253,24 +398,25 @@ async def submit_feedback(feedback: FeedbackRequest, background_tasks: Backgroun
     }
     background_tasks.add_task(save_log, FEEDBACK_LOG_FILE, entry)
 
-    if feedback.rating == 5:
+    if feedback.rating == 5 and openai_client and index:
         try:
-            emb_resp = openai_client.embeddings.create(input=feedback.question, model="text-embedding-ada-002")
-            vector = emb_resp.data[0].embedding
+            emb_resp = openai_client.embeddings.create(
+                input=feedback.question,
+                model=EMBEDDING_MODEL
+            )
             index.upsert(
-                vectors=[{"id": str(uuid.uuid4()), "values": vector, "metadata": {"question": feedback.question, "response": feedback.answer, "suggested_questions": json.dumps(feedback.suggested_questions)}}],
+                vectors=[{
+                    "id": str(uuid.uuid4()),
+                    "values": emb_resp.data[0].embedding,
+                    "metadata": {
+                        "question": feedback.question,
+                        "response": feedback.answer,
+                        "suggested_questions": json.dumps(feedback.suggested_questions)
+                    }
+                }],
                 namespace=CACHE_NAMESPACE
             )
-        except Exception:
-            pass
-    return {"status": "Recorded"}
+        except Exception as e:
+            logger.warning(f"Semantic cache upsert failed: {e}")
 
-@router.get("/admin/stats")
-async def get_stats():
-    gaps, feedback = [], []
-    for log_file, target_list in [(GAP_LOG_FILE, gaps), (FEEDBACK_LOG_FILE, feedback)]:
-        if os.path.exists(log_file):
-            with open(log_file) as f: 
-                try: target_list.extend(json.load(f))
-                except: pass
-    return {"gaps": gaps, "feedback": feedback}
+    return {"status": "Recorded"}

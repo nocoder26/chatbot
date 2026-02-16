@@ -2,10 +2,10 @@
   "rewrites": [
     {
       "source": "/api/:path*",
-      "destination": "https://your-railway-backend.up.railway.app/:path*"
+      "destination": "https://fertility-bot-staging.up.railway.app/:path*"
     }
   ],
   "env": {
-    "NEXT_PUBLIC_API_URL": "https://your-railway-backend.up.railway.app"
+    "NEXT_PUBLIC_API_URL": "https://fertility-bot-staging.up.railway.app"
   }
 }

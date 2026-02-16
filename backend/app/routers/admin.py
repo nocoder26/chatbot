@@ -1,221 +1,93 @@
 import os
-
-from typing import List, Optional
-
-from datetime import datetime
-
-from fastapi import APIRouter, Depends
-
+import json
+import logging
+import hashlib
+from fastapi import APIRouter, HTTPException, Depends, Header
 from fastapi.responses import FileResponse
+from typing import Optional
 
-from pydantic import BaseModel
-
-from sqlalchemy.orm import Session
-
-
-
-from app.database import get_db
-
-from app.models import ChatLog, Feedback
-
-
+logger = logging.getLogger("izana.admin")
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
-
-
-
-
-class GapItem(BaseModel):
-
-    id: int
-
-    query: str
-
-    response: str
-
-    lang: str
-
-    score: Optional[float]
-
-    created_at: datetime
-
-
-
-    class Config:
-
-        from_attributes = True
-
-
-
-
-
-class FeedbackItem(BaseModel):
-
-    id: int
-
-    chat_id: int
-
-    query: str
-
-    response: str
-
-    rating: int
-
-    comment: Optional[str]
-
-    created_at: datetime
-
-
-
-
-
-class AdminStats(BaseModel):
-
-    gaps: List[GapItem]
-
-    low_ratings: List[FeedbackItem]
-
-
-
-
-
-@router.get("/stats", response_model=AdminStats)
-
-async def get_stats(db: Session = Depends(get_db)):
-
-    """
-
-    Get admin statistics including gaps and low ratings.
-
-
-
-    Returns:
-
-        - gaps: Last 50 chat logs where is_gap=True (low confidence matches)
-
-        - low_ratings: Last 50 feedback entries with rating < 3
-
-    """
-
-    # Get last 50 gaps
-
-    gaps = (
-
-        db.query(ChatLog)
-
-        .filter(ChatLog.is_gap == True)
-
-        .order_by(ChatLog.created_at.desc())
-
-        .limit(50)
-
-        .all()
-
-    )
-
-
-
-    # Get last 50 low ratings (rating < 3) with chat details
-
-    low_ratings_query = (
-
-        db.query(Feedback, ChatLog)
-
-        .join(ChatLog, Feedback.chat_id == ChatLog.id)
-
-        .filter(Feedback.rating < 3)
-
-        .order_by(Feedback.created_at.desc())
-
-        .limit(50)
-
-        .all()
-
-    )
-
-
-
-    low_ratings = [
-
-        FeedbackItem(
-
-            id=feedback.id,
-
-            chat_id=feedback.chat_id,
-
-            query=chat.query,
-
-            response=chat.response,
-
-            rating=feedback.rating,
-
-            comment=feedback.comment,
-
-            created_at=feedback.created_at,
-
-        )
-
-        for feedback, chat in low_ratings_query
-
-    ]
-
-
-
-    return AdminStats(
-
-        gaps=[GapItem.model_validate(g) for g in gaps],
-
-        low_ratings=low_ratings,
-
-    )
-
-
-
+_configured_key = os.getenv("ADMIN_API_KEY", "")
+if _configured_key:
+    ADMIN_API_KEY = _configured_key
+else:
+    _pin = os.getenv("ADMIN_PIN", "2603")
+    ADMIN_API_KEY = hashlib.sha256(f"izana-admin-{_pin}".encode()).hexdigest()[:32]
+
+# --- TRACKING FILES ---
+GAP_LOG_FILE = os.getenv("GAP_LOG_FILE", "/tmp/gap_logs.json")
+FEEDBACK_LOG_FILE = os.getenv("FEEDBACK_LOG_FILE", "/tmp/feedback_logs.json")
+DOC_USAGE_LOG_FILE = os.getenv("DOC_USAGE_LOG_FILE", "/tmp/doc_usage_logs.json")
+
+
+async def verify_admin(x_admin_key: Optional[str] = Header(None)):
+    """Dependency that verifies admin API key from request header."""
+    if not ADMIN_API_KEY:
+        logger.warning("ADMIN_API_KEY not configured - admin endpoints unprotected")
+        return True
+    if not x_admin_key or x_admin_key != ADMIN_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid or missing admin key")
+    return True
+
+
+def _read_log_file(filepath: str) -> list:
+    """Safely read a JSON log file and return its contents."""
+    try:
+        if os.path.exists(filepath):
+            with open(filepath, "r") as f:
+                content = f.read()
+                if content:
+                    return json.loads(content)
+    except json.JSONDecodeError as e:
+        logger.error(f"Corrupt log file {filepath}: {e}")
+    except OSError as e:
+        logger.error(f"Error reading log file {filepath}: {e}")
+    return []
+
+
+@router.get("/stats")
+async def get_stats(_auth: bool = Depends(verify_admin)):
+    """Get admin statistics including gaps, feedback, and document usage logs."""
+    gaps = _read_log_file(GAP_LOG_FILE)
+    feedback = _read_log_file(FEEDBACK_LOG_FILE)
+    doc_usage = _read_log_file(DOC_USAGE_LOG_FILE)
+
+    return {
+        "gaps": gaps,
+        "feedback": feedback,
+        "doc_usage": doc_usage
+    }
+
+
+@router.post("/verify-pin")
+async def verify_pin(body: dict):
+    """Verify admin PIN from frontend login. PIN is stored server-side only."""
+    admin_pin = os.getenv("ADMIN_PIN", "2603")
+    if not admin_pin:
+        raise HTTPException(status_code=503, detail="Admin PIN not configured on server")
+
+    submitted_pin = body.get("pin", "")
+    if submitted_pin == admin_pin:
+        return {"authenticated": True, "admin_key": ADMIN_API_KEY}
+    raise HTTPException(status_code=401, detail="Incorrect PIN")
 
 
 @router.get("/download_db")
-
-async def download_database():
-
-    """
-
-    Download the SQLite database file for local analysis.
-
-
-
-    Returns:
-
-        The chatbot.db file as a downloadable attachment.
-
-    """
-
-    # Determine database path based on environment
-
+async def download_database(_auth: bool = Depends(verify_admin)):
+    """Download the SQLite database file for local analysis."""
     if os.getenv("RAILWAY_ENVIRONMENT"):
-
         db_path = "/app/backend/data/chatbot.db"
-
     else:
-
-        db_path = "./backend/data/chatbot.db"
-
-
-
-    if not os.path.exists(db_path):
-
-        # Try alternate path when running from backend directory
-
         db_path = "./data/chatbot.db"
 
-
+    if not os.path.exists(db_path):
+        raise HTTPException(status_code=404, detail="Database file not found")
 
     return FileResponse(
-
         path=db_path,
-
         filename="chatbot.db",
-
         media_type="application/octet-stream",
-
     )

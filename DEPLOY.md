@@ -20,25 +20,26 @@
 Add the following environment variables in Railway:
 
 ```
+# Required API Keys
 GROQ_API_KEY=your_groq_api_key
 PINECONE_API_KEY=your_pinecone_api_key
+PINECONE_INDEX_NAME=reproductive-health
 OPENAI_API_KEY=your_openai_api_key
-RUNPOD_API_KEY=your_runpod_api_key
-RUNPOD_ENDPOINT_ID=your_runpod_endpoint_id
+COHERE_API_KEY=your_cohere_api_key
+
+# Security (CHANGE THESE!)
+ADMIN_PIN=your-secure-pin
+ADMIN_API_KEY=your-secure-random-api-key
+ALLOWED_ORIGINS=https://your-vercel-domain.vercel.app
+
+# Railway auto-sets these
 RAILWAY_ENVIRONMENT=production
+PORT=8000
 ```
 
-### 4. Configure Start Command
+### 4. Deploy
 
-Set the start command in Railway:
-
-```bash
-uvicorn app.main:app --host 0.0.0.0 --port $PORT
-```
-
-### 5. Deploy
-
-Railway will automatically deploy when you push to your main branch.
+Railway will automatically deploy when you push to your main branch. The start command is configured in `railway.json`.
 
 ---
 
@@ -60,7 +61,7 @@ NEXT_PUBLIC_API_URL=https://your-railway-backend.up.railway.app
 
 ### 3. Update vercel.json
 
-Edit `frontend/vercel.json` and replace `your-railway-backend.up.railway.app` with your actual Railway backend URL.
+Edit `frontend/vercel.json` and replace the placeholder URL with your actual Railway backend URL.
 
 ### 4. Deploy
 
@@ -86,7 +87,7 @@ python ingest_local.py
 This will:
 - Scan all PDFs in `backend/data/`
 - Split them into chunks (600 chars, 100 overlap)
-- Generate embeddings using OpenAI
+- Generate embeddings using OpenAI Ada-002
 - Upsert to Pinecone index `reproductive-health`
 
 ### Notes
@@ -94,6 +95,42 @@ This will:
 - The Pinecone index is shared between local and production environments
 - Run ingestion locally to avoid long build times on Railway
 - PDF files are tracked in git (see `.gitignore` negation pattern)
+
+---
+
+## Architecture Overview
+
+```
+┌─────────────────────┐         ┌─────────────────────┐         ┌─────────────────┐
+│   Vercel (Frontend)  │  HTTP   │  Railway (Backend)   │         │    Pinecone     │
+│   Next.js 14 (App)   │────────>│  FastAPI + Uvicorn   │────────>│  Vector DB      │
+│   React 18 + TW CSS  │         │  Python 3.11         │         │  (cosine sim)   │
+└─────────────────────┘         └──────────┬───────────┘         └─────────────────┘
+                                           │
+                          ┌────────────────┼────────────────┐
+                          │                │                │
+                          v                v                v
+                   ┌────────────┐   ┌────────────┐   ┌────────────┐
+                   │   Groq     │   │   OpenAI   │   │   Cohere   │
+                   │   LLaMA 3  │   │   Ada-002  │   │  Reranker  │
+                   │  (LLM +    │   │ (Embedding)│   │ (v3.5)     │
+                   │ Translation)│   └────────────┘   └────────────┘
+                   └────────────┘
+```
+
+### Supported Languages
+
+English, Tamil, Hindi, Telugu, Malayalam, Spanish, Japanese
+
+### Security Features
+
+- Admin PIN verified server-side only
+- Admin API key required for all admin endpoints (X-Admin-Key header)
+- CORS restricted to configured origins (ALLOWED_ORIGINS env var)
+- Rate limiting on upload endpoints (slowapi)
+- Input sanitization against prompt injection
+- File size limits on PDF uploads
+- Pydantic validation on all request models
 
 ---
 
@@ -116,28 +153,8 @@ uvicorn app.main:app --reload
 ```bash
 cd frontend
 npm install
+# Set NEXT_PUBLIC_API_URL=http://localhost:8000 in .env.local
 npm run dev
-```
-
----
-
-## Architecture Overview
-
-```
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│                 │     │                 │     │                 │
-│  Vercel         │────▶│  Railway        │────▶│  Pinecone       │
-│  (Next.js)      │     │  (FastAPI)      │     │  (Vector DB)    │
-│                 │     │                 │     │                 │
-└─────────────────┘     └────────┬────────┘     └─────────────────┘
-                                 │
-                    ┌────────────┼────────────┐
-                    │            │            │
-                    ▼            ▼            ▼
-              ┌──────────┐ ┌──────────┐ ┌──────────┐
-              │  Groq    │ │  RunPod  │ │  SQLite  │
-              │  (LLM)   │ │ (Transl) │ │  (Logs)  │
-              └──────────┘ └──────────┘ └──────────┘
 ```
 
 ---
@@ -145,17 +162,19 @@ npm run dev
 ## Troubleshooting
 
 ### Database not persisting on Railway
-
 Ensure the volume is mounted at `/app/backend/data`. Check Railway logs for any mount errors.
 
 ### CORS errors
+Verify that `ALLOWED_ORIGINS` includes your Vercel domain and `NEXT_PUBLIC_API_URL` matches your Railway backend URL exactly (including https://).
 
-Verify that `NEXT_PUBLIC_API_URL` matches your Railway backend URL exactly (including https://).
+### Reranking not working
+Ensure `COHERE_API_KEY` is set. The system will fall back to raw Pinecone scores if Cohere is unavailable.
 
-### Translation errors
-
-Check that `RUNPOD_API_KEY` and `RUNPOD_ENDPOINT_ID` are set correctly. The translator will fallback gracefully on errors.
+### Translation not working
+Translation uses Groq LLM. Ensure `GROQ_API_KEY` is set. If the user selects English, no translation occurs.
 
 ### Empty search results
-
 Run `python backend/ingest_local.py` to populate the Pinecone index with your PDF documents.
+
+### Admin login fails
+Ensure `ADMIN_PIN` and `ADMIN_API_KEY` are set as environment variables on Railway.
