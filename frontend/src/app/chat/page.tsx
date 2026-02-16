@@ -24,6 +24,7 @@ interface ChatMessage {
   isBloodWorkPrompt?: boolean;
   userQuery?: string;
   rating?: number;
+  feedbackReason?: string;
 }
 
 // --- TOPIC SHORTCUTS ---
@@ -36,9 +37,12 @@ const TOPIC_ICONS = [
   { label: "Success Rates", query: "How to improve IVF success?" },
 ];
 
-const LOADING_STEPS = ["Understanding your needs...", "Reading medical knowledge...", "Almost there..."];
+const LOADING_STEPS = [
+  "Understanding your needs...",
+  "Reading medical knowledge...",
+  "Almost there...",
+];
 
-// --- LANGUAGE MAP ---
 const LANGUAGE_NAMES: Record<string, string> = {
   en: "English",
   ta: "Tamil",
@@ -49,8 +53,23 @@ const LANGUAGE_NAMES: Record<string, string> = {
   ja: "Japanese",
 };
 
+const FEEDBACK_REASONS = [
+  "Not accurate",
+  "Too vague",
+  "Not relevant",
+  "Outdated info",
+  "Hard to understand",
+  "Other",
+];
+
 // --- ANIMATED TEXT RENDERER ---
-function GeminiFadeText({ text, onComplete }: { text: string; onComplete: () => void }) {
+function GeminiFadeText({
+  text,
+  onComplete,
+}: {
+  text: string;
+  onComplete: () => void;
+}) {
   const paragraphs = text.split("\n\n").filter((p) => p.trim() !== "");
 
   useEffect(() => {
@@ -76,41 +95,83 @@ function GeminiFadeText({ text, onComplete }: { text: string; onComplete: () => 
   );
 }
 
-// --- INLINE STAR RATING ---
+// --- INLINE STAR RATING WITH FEEDBACK REASON ---
 function InlineStarRating({
   currentRating,
+  feedbackReason,
   onRate,
+  onReasonSelect,
 }: {
   currentRating: number;
+  feedbackReason?: string;
   onRate: (r: number) => void;
+  onReasonSelect: (reason: string) => void;
 }) {
   const [hoveredRating, setHoveredRating] = useState(0);
   const display = hoveredRating || currentRating;
+  const showReasonPicker = currentRating >= 1 && currentRating <= 3 && !feedbackReason;
 
   return (
-    <div className="flex items-center gap-1 pt-3 border-t border-white/10 mt-3">
-      <span className="text-xs text-white/60 mr-2">Rate this response:</span>
-      {[1, 2, 3, 4, 5].map((star) => (
-        <button
-          key={star}
-          onClick={() => onRate(star)}
-          onMouseEnter={() => setHoveredRating(star)}
-          onMouseLeave={() => setHoveredRating(0)}
-          className="p-0.5 transition-transform hover:scale-110"
-        >
-          <Star
-            className={`w-4 h-4 transition-colors ${
-              star <= display
-                ? "fill-yellow-400 text-yellow-400"
-                : "text-white/30"
-            }`}
-          />
-        </button>
-      ))}
-      {currentRating > 0 && (
-        <span className="text-xs text-white/50 ml-2">
-          {currentRating === 5 ? "Thank you!" : "Thanks for your feedback"}
-        </span>
+    <div className="pt-3 border-t border-white/10 mt-3">
+      <div className="flex items-center gap-1">
+        <span className="text-xs text-white/60 mr-2">Rate this response:</span>
+        {[1, 2, 3, 4, 5].map((star) => (
+          <button
+            key={star}
+            onClick={() => onRate(star)}
+            onMouseEnter={() => setHoveredRating(star)}
+            onMouseLeave={() => setHoveredRating(0)}
+            className="p-0.5 transition-transform hover:scale-110"
+          >
+            <Star
+              className={`w-4 h-4 transition-colors ${
+                star <= display
+                  ? "fill-yellow-400 text-yellow-400"
+                  : "text-white/30"
+              }`}
+            />
+          </button>
+        ))}
+        {currentRating > 3 && (
+          <span className="text-xs text-white/50 ml-2">
+            {currentRating === 5 ? "Thank you!" : "Thanks for your feedback"}
+          </span>
+        )}
+      </div>
+
+      {/* Reason popup for 3 stars or less */}
+      <AnimatePresence>
+        {showReasonPicker && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: "auto" }}
+            exit={{ opacity: 0, height: 0 }}
+            className="overflow-hidden"
+          >
+            <div className="mt-2.5 p-3 bg-white/10 rounded-xl">
+              <p className="text-[11px] text-white/50 mb-2 font-medium">
+                What could be improved?
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {FEEDBACK_REASONS.map((reason) => (
+                  <button
+                    key={reason}
+                    onClick={() => onReasonSelect(reason)}
+                    className="px-2.5 py-1 text-[11px] font-medium rounded-lg bg-white/10 text-white/70 hover:bg-[#ff7a55] hover:text-white transition-all active:scale-95"
+                  >
+                    {reason}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {feedbackReason && currentRating <= 3 && (
+        <p className="text-xs text-white/40 mt-2 italic">
+          Feedback recorded: {feedbackReason}
+        </p>
       )}
     </div>
   );
@@ -126,7 +187,9 @@ export default function ChatPage() {
   const [loadingStep, setLoadingStep] = useState(0);
   const [langCode, setLangCode] = useState("en");
   const [showBloodWorkModal, setShowBloodWorkModal] = useState(false);
-  const [bloodWorkData, setBloodWorkData] = useState<{ results: LabResult[] } | null>(null);
+  const [bloodWorkData, setBloodWorkData] = useState<{
+    results: LabResult[];
+  } | null>(null);
   const [isUploadingPdf, setIsUploadingPdf] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -162,15 +225,45 @@ export default function ChatPage() {
     if (!msg) return;
 
     setMessages((prev) =>
-      prev.map((m) => (m.id === messageId ? { ...m, rating } : m))
+      prev.map((m) =>
+        m.id === messageId ? { ...m, rating, feedbackReason: undefined } : m
+      )
+    );
+
+    if (rating > 3) {
+      try {
+        await submitFeedback({
+          question: msg.userQuery || "",
+          answer: msg.content,
+          rating,
+          reason: "",
+          suggested_questions: msg.suggested_questions || [],
+        });
+      } catch (err) {
+        console.error("Failed to submit feedback:", err);
+      }
+    }
+  };
+
+  const handleFeedbackReason = async (
+    messageId: number,
+    reason: string
+  ) => {
+    const msg = messages.find((m) => m.id === messageId);
+    if (!msg) return;
+
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.id === messageId ? { ...m, feedbackReason: reason } : m
+      )
     );
 
     try {
       await submitFeedback({
         question: msg.userQuery || "",
         answer: msg.content,
-        rating,
-        reason: "",
+        rating: msg.rating || 1,
+        reason,
         suggested_questions: msg.suggested_questions || [],
       });
     } catch (err) {
@@ -190,13 +283,17 @@ export default function ChatPage() {
     }
     setInput("");
 
-    if (query.toLowerCase().includes("blood work") || query.toLowerCase().includes("bloodwork")) {
+    if (
+      query.toLowerCase().includes("blood work") ||
+      query.toLowerCase().includes("bloodwork")
+    ) {
       setMessages((p) => [
         ...p,
         {
           id: Date.now() + 1,
           type: "bot",
-          content: "Please upload your lab report (PDF) so we can analyze your blood work results.",
+          content:
+            "Please upload your lab report (PDF) so we can analyze your blood work results.",
           isBloodWorkPrompt: true,
           isAnimating: false,
         },
@@ -231,7 +328,8 @@ export default function ChatPage() {
         {
           id: Date.now() + 1,
           type: "bot",
-          content: "We encountered an error connecting to the AI service. Please try again.",
+          content:
+            "We encountered an error connecting to the AI service. Please try again.",
           isAnimating: false,
         },
       ]);
@@ -240,7 +338,10 @@ export default function ChatPage() {
     }
   };
 
-  const handleBloodWorkConfirm = async (confirmedData: { results: LabResult[] }) => {
+  const handleBloodWorkConfirm = async (confirmedData: {
+    results: LabResult[];
+    treatment: string;
+  }) => {
     setShowBloodWorkModal(false);
     setBloodWorkData(null);
 
@@ -248,12 +349,16 @@ export default function ChatPage() {
       .map((r) => `${r.name}: ${r.value} ${r.unit}`)
       .join(", ");
 
+    const treatmentLabel = confirmedData.treatment
+      ? ` (Treatment: ${confirmedData.treatment})`
+      : "";
+
     setMessages((p) => [
       ...p,
       {
         id: Date.now(),
         type: "user",
-        content: `Analyze my lab results: ${labSummary}`,
+        content: `Analyze my lab results: ${labSummary}${treatmentLabel}`,
         isAnimating: false,
       },
     ]);
@@ -261,9 +366,11 @@ export default function ChatPage() {
     setIsLoading(true);
     try {
       const data: ChatResponse = await sendChatMessage({
-        message: `Please analyze these fertility blood work results and provide a detailed interpretation.`,
+        message:
+          "Please analyze these fertility blood work results and provide a detailed interpretation.",
         language: langCode,
-        clinical_data: confirmedData,
+        clinical_data: { results: confirmedData.results },
+        treatment: confirmedData.treatment || undefined,
       });
 
       setMessages((p) => [
@@ -286,7 +393,8 @@ export default function ChatPage() {
         {
           id: Date.now() + 1,
           type: "bot",
-          content: "We encountered an error analyzing your blood work. Please try again.",
+          content:
+            "We encountered an error analyzing your blood work. Please try again.",
           isAnimating: false,
         },
       ]);
@@ -295,7 +403,9 @@ export default function ChatPage() {
     }
   };
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = async (
+    e: React.ChangeEvent<HTMLInputElement>
+  ) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
@@ -347,7 +457,9 @@ export default function ChatPage() {
           {
             id: Date.now(),
             type: "bot",
-            content: data.error || "An unknown error occurred while processing the PDF.",
+            content:
+              data.error ||
+              "An unknown error occurred while processing the PDF.",
             isAnimating: false,
           },
         ]);
@@ -399,13 +511,17 @@ export default function ChatPage() {
       {/* HEADER */}
       <header className="flex justify-between items-center px-4 py-3 border-b border-black/5 dark:border-white/5">
         <button
-          onClick={() => (messages.length > 0 ? setMessages([]) : router.push("/"))}
+          onClick={() =>
+            messages.length > 0 ? setMessages([]) : router.push("/")
+          }
           className="p-2 rounded-full hover:bg-black/5"
         >
           <ArrowLeft className="w-5 h-5" />
         </button>
         <div className="flex items-center gap-2">
-          <span className="font-bold text-[#3231b1] dark:text-[#86eae9]">Izana AI</span>
+          <span className="font-bold text-[#3231b1] dark:text-[#86eae9]">
+            Izana AI
+          </span>
           <span className="text-xs text-slate-400">
             {LANGUAGE_NAMES[langCode] || "English"}
           </span>
@@ -419,7 +535,9 @@ export default function ChatPage() {
           <div className="h-full flex flex-col items-center justify-center space-y-8">
             <h2 className="text-3xl font-light text-center">
               How can{" "}
-              <span className="font-bold text-[#3231b1] dark:text-[#86eae9]">Izana</span>{" "}
+              <span className="font-bold text-[#3231b1] dark:text-[#86eae9]">
+                Izana
+              </span>{" "}
               help?
             </h2>
             <div className="grid grid-cols-2 gap-3 w-full">
@@ -461,7 +579,9 @@ export default function ChatPage() {
                     onComplete={() =>
                       setMessages((prev) =>
                         prev.map((msg) =>
-                          msg.id === m.id ? { ...msg, isAnimating: false } : msg
+                          msg.id === m.id
+                            ? { ...msg, isAnimating: false }
+                            : msg
                         )
                       )
                     }
@@ -496,7 +616,7 @@ export default function ChatPage() {
                     </div>
                   )}
 
-                {/* Follow-Up Questions - shown for ALL bot responses after animation */}
+                {/* Follow-Up Questions */}
                 {m.type === "bot" &&
                   !m.isAnimating &&
                   !m.isBloodWorkPrompt &&
@@ -509,20 +629,25 @@ export default function ChatPage() {
                           onClick={() => handleSend(q)}
                           className="w-full text-left text-sm bg-white/10 p-3 rounded-xl flex items-center justify-between hover:bg-white/20 transition-colors"
                         >
-                          {q} <ChevronRight className="w-4 h-4 text-[#ff7a55] shrink-0" />
+                          {q}{" "}
+                          <ChevronRight className="w-4 h-4 text-[#ff7a55] shrink-0" />
                         </button>
                       ))}
                     </div>
                   )}
 
-                {/* Star Rating - shown for ALL bot responses with content */}
+                {/* Star Rating with feedback reason popup */}
                 {m.type === "bot" &&
                   !m.isAnimating &&
                   !m.isBloodWorkPrompt &&
                   m.userQuery && (
                     <InlineStarRating
                       currentRating={m.rating || 0}
+                      feedbackReason={m.feedbackReason}
                       onRate={(r) => handleRate(m.id, r)}
+                      onReasonSelect={(reason) =>
+                        handleFeedbackReason(m.id, reason)
+                      }
                     />
                   )}
 
@@ -535,7 +660,8 @@ export default function ChatPage() {
                   >
                     {isUploadingPdf ? (
                       <>
-                        <Loader2 className="w-4 h-4 animate-spin" /> Processing...
+                        <Loader2 className="w-4 h-4 animate-spin" />{" "}
+                        Processing...
                       </>
                     ) : (
                       <>
@@ -567,7 +693,9 @@ export default function ChatPage() {
           <input
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && handleSend()}
+            onKeyDown={(e) =>
+              e.key === "Enter" && !e.shiftKey && handleSend()
+            }
             placeholder="Ask a question..."
             className="flex-1 bg-transparent py-2 outline-none text-sm"
             maxLength={2000}
@@ -582,7 +710,8 @@ export default function ChatPage() {
           </button>
         </div>
         <p className="text-center text-[10px] text-slate-400 mt-2">
-          Izana AI provides general medical information only. Always consult a healthcare professional.
+          Izana AI provides general medical information only. Always consult a
+          healthcare professional.
         </p>
       </div>
 
@@ -610,7 +739,7 @@ export default function ChatPage() {
               initial={{ opacity: 0, scale: 0.95, y: 20 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: 20 }}
-              className="fixed inset-x-4 top-1/2 -translate-y-1/2 z-50 max-w-2xl mx-auto"
+              className="fixed inset-4 sm:inset-x-4 z-50 max-w-2xl mx-auto flex items-center justify-center"
             >
               <BloodWorkConfirm
                 initialData={bloodWorkData}

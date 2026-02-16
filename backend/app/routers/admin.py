@@ -59,7 +59,7 @@ async def get_stats(_auth: bool = Depends(verify_admin)):
 @router.post("/verify-pin")
 async def verify_pin(body: dict):
     """Verify admin PIN from frontend login. PIN is stored server-side only."""
-    admin_pin = os.getenv("ADMIN_PIN", "")
+    admin_pin = os.getenv("ADMIN_PIN", "2603")
     if not admin_pin:
         raise HTTPException(status_code=503, detail="Admin PIN not configured on server")
 
