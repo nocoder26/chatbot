@@ -3,6 +3,7 @@ import json
 import uuid
 import logging
 import re
+import asyncio
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Request
@@ -214,6 +215,20 @@ Text to translate:
         return text
 
 
+async def retry_api_call(func, max_retries=3, delay=1):
+    """Retry an API call with exponential backoff. Pass function as lambda."""
+    for attempt in range(max_retries):
+        try:
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(None, func)
+        except Exception as e:
+            if attempt == max_retries - 1:
+                raise
+            wait_time = delay * (2 ** attempt)
+            logger.warning(f"API call failed (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {wait_time}s...")
+            await asyncio.sleep(wait_time)
+
+
 # --- MAIN CHAT ENDPOINT ---
 limiter = Limiter(key_func=get_remote_address)
 
@@ -245,11 +260,14 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest, background_
                 "Return the missing names as a comma-separated list, or 'COMPLETE' if all present."
             )
             try:
-                check_comp = groq_client.chat.completions.create(
-                    messages=[{"role": "user", "content": check_prompt}],
-                    model=QC_MODEL,
-                    temperature=0.1,
-                    max_tokens=100
+                check_comp = await retry_api_call(
+                    lambda: groq_client.chat.completions.create(
+                        messages=[{"role": "user", "content": check_prompt}],
+                        model=QC_MODEL,
+                        temperature=0.1,
+                        max_tokens=100
+                    ),
+                    max_retries=2
                 )
                 missing = check_comp.choices[0].message.content.strip()
                 if "COMPLETE" not in missing.upper():
@@ -263,12 +281,25 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest, background_
             search_query = user_message
 
         # 2. SEMANTIC SEARCH + RERANKING
-        emb_resp = openai_client.embeddings.create(
-            input=[search_query],
-            model=EMBEDDING_MODEL
-        )
-        vector = emb_resp.data[0].embedding
-        search_resp = index.query(vector=vector, top_k=8, include_metadata=True)
+        try:
+            emb_resp = await retry_api_call(
+                lambda: openai_client.embeddings.create(
+                    input=[search_query],
+                    model=EMBEDDING_MODEL
+                ),
+                max_retries=3
+            )
+            vector = emb_resp.data[0].embedding
+            search_resp = await retry_api_call(
+                lambda: index.query(vector=vector, top_k=8, include_metadata=True),
+                max_retries=3
+            )
+        except Exception as e:
+            logger.error(f"Search/embedding failed: {e}", exc_info=True)
+            raise HTTPException(
+                status_code=503,
+                detail="Search service temporarily unavailable. Please try again in a moment."
+            )
 
         reranked_matches = rerank_results(search_query, search_resp.matches)
 
@@ -309,15 +340,25 @@ CONTEXT FROM MEDICAL KNOWLEDGE BASE:
 {context_text}
 {missing_params_text}"""
 
-        draft_comp = groq_client.chat.completions.create(
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": search_query}
-            ],
-            model=DRAFT_MODEL,
-            temperature=0.3
-        )
-        draft_response = draft_comp.choices[0].message.content
+        try:
+            draft_comp = await retry_api_call(
+                lambda: groq_client.chat.completions.create(
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": search_query}
+                    ],
+                    model=DRAFT_MODEL,
+                    temperature=0.3
+                ),
+                max_retries=3
+            )
+            draft_response = draft_comp.choices[0].message.content
+        except Exception as e:
+            logger.error(f"Draft generation failed: {e}", exc_info=True)
+            raise HTTPException(
+                status_code=503,
+                detail="AI service temporarily unavailable. Please try again in a moment."
+            )
 
         # 4. STRUCTURED OUTPUT WITH FOLLOW-UP QUESTIONS
         try:
@@ -332,12 +373,15 @@ Rules:
 Draft to process:
 {draft_response}"""
 
-            qc_comp = groq_client.chat.completions.create(
-                messages=[{"role": "user", "content": qc_prompt}],
-                model=QC_MODEL,
-                response_format={"type": "json_object"},
-                temperature=0.2,
-                max_tokens=2000
+            qc_comp = await retry_api_call(
+                lambda: groq_client.chat.completions.create(
+                    messages=[{"role": "user", "content": qc_prompt}],
+                    model=QC_MODEL,
+                    response_format={"type": "json_object"},
+                    temperature=0.2,
+                    max_tokens=2000
+                ),
+                max_retries=2
             )
             final_data = json.loads(qc_comp.choices[0].message.content)
             res_text = final_data.get("revised_response", "")
@@ -375,9 +419,21 @@ Draft to process:
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Chat processing error: {e}", exc_info=True)
+        error_msg = str(e)
+        logger.error(f"Chat processing error: {error_msg}", exc_info=True)
+        
+        # Provide more helpful error messages based on error type
+        if "503" in error_msg or "service" in error_msg.lower() or "unavailable" in error_msg.lower():
+            user_message = "The AI service is temporarily unavailable. Please try again in a few moments."
+        elif "rate limit" in error_msg.lower() or "quota" in error_msg.lower():
+            user_message = "We're experiencing high demand. Please wait a moment and try again."
+        elif "timeout" in error_msg.lower():
+            user_message = "The request took too long to process. Please try again with a shorter question."
+        else:
+            user_message = "We encountered a processing error. Could you please try asking your question again?"
+        
         return ChatResponse(
-            response="We encountered a processing error. Could you please try asking your question again?",
+            response=user_message,
             citations=[],
             suggested_questions=[
                 "What is IVF?",
