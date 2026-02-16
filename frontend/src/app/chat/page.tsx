@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
-import { Send, ArrowLeft, Loader2, ChevronRight, Paperclip, Star } from "lucide-react";
+import { Send, ArrowLeft, Loader2, ChevronRight, Paperclip, Star, Heart, Users, UtensilsCrossed, TestTube, TrendingUp, Baby } from "lucide-react";
 import BloodWorkConfirm from "@/components/BloodWorkConfirm";
 import {
   sendChatMessage,
@@ -29,18 +29,19 @@ interface ChatMessage {
 
 // --- TOPIC SHORTCUTS ---
 const TOPIC_ICONS = [
-  { label: "IVF", query: "What is IVF?" },
-  { label: "Male Fertility", query: "How can men improve fertility?" },
-  { label: "IUI", query: "What is IUI?" },
-  { label: "Nutrition", query: "Fertility diet tips" },
-  { label: "Blood Work", query: "I want to understand my blood work." },
-  { label: "Success Rates", query: "How to improve IVF success?" },
+  { label: "IVF", query: "What is IVF?", icon: Heart },
+  { label: "IUI", query: "What is IUI?", icon: Heart },
+  { label: "Male Fertility", query: "How can men improve fertility?", icon: Users },
+  { label: "Nutrition and Fertility", query: "Fertility diet tips", icon: UtensilsCrossed },
+  { label: "Understand your Bloodwork", query: "I want to understand my blood work.", icon: TestTube },
+  { label: "Fertility Success Rates", query: "How to improve IVF success?", icon: TrendingUp },
 ];
 
-const LOADING_STEPS = [
-  "Understanding your needs...",
-  "Reading medical knowledge...",
-  "Almost there...",
+// Loading steps will be translated dynamically based on langCode
+const getLoadingSteps = (lang: string): string[] => [
+  getTranslation("understandingNeeds", lang),
+  getTranslation("readingKnowledge", lang),
+  getTranslation("almostThere", lang),
 ];
 
 const LANGUAGE_NAMES: Record<string, string> = {
@@ -51,6 +52,57 @@ const LANGUAGE_NAMES: Record<string, string> = {
   ml: "Malayalam",
   es: "Spanish",
   ja: "Japanese",
+};
+
+// --- TRANSLATIONS ---
+const TRANSLATIONS: Record<string, Record<string, string>> = {
+  en: {
+    "howCanHelp": "How can Izana help?",
+    "understandingNeeds": "Understanding your needs...",
+    "readingKnowledge": "Reading medical knowledge...",
+    "almostThere": "Almost there...",
+  },
+  ta: {
+    "howCanHelp": "இசானா எவ்வாறு உதவ முடியும்?",
+    "understandingNeeds": "உங்கள் தேவைகளை புரிந்துகொள்கிறது...",
+    "readingKnowledge": "மருத்துவ அறிவைப் படிக்கிறது...",
+    "almostThere": "கிட்டத்தட்ட முடிந்தது...",
+  },
+  hi: {
+    "howCanHelp": "इज़ाना कैसे मदद कर सकता है?",
+    "understandingNeeds": "आपकी जरूरतों को समझ रहा है...",
+    "readingKnowledge": "चिकित्सा ज्ञान पढ़ रहा है...",
+    "almostThere": "लगभग हो गया...",
+  },
+  te: {
+    "howCanHelp": "ఇజానా ఎలా సహాయం చేయగలదు?",
+    "understandingNeeds": "మీ అవసరాలను అర్థం చేసుకుంటోంది...",
+    "readingKnowledge": "వైద్య జ్ఞానాన్ని చదువుతోంది...",
+    "almostThere": "దాదాపు పూర్తయింది...",
+  },
+  ml: {
+    "howCanHelp": "ഇസാന എങ്ങനെ സഹായിക്കും?",
+    "understandingNeeds": "നിങ്ങളുടെ ആവശ്യങ്ങൾ മനസ്സിലാക്കുന്നു...",
+    "readingKnowledge": "വൈദ്യ അറിവ് വായിക്കുന്നു...",
+    "almostThere": "മിക്കവാറും പൂർത്തിയായി...",
+  },
+  es: {
+    "howCanHelp": "¿Cómo puede ayudar Izana?",
+    "understandingNeeds": "Entendiendo tus necesidades...",
+    "readingKnowledge": "Leyendo conocimiento médico...",
+    "almostThere": "Casi listo...",
+  },
+  ja: {
+    "howCanHelp": "イザナはどのようにお手伝いできますか？",
+    "understandingNeeds": "あなたのニーズを理解しています...",
+    "readingKnowledge": "医学知識を読んでいます...",
+    "almostThere": "もうすぐです...",
+  },
+};
+
+// Helper function to get translation
+const getTranslation = (key: string, lang: string): string => {
+  return TRANSLATIONS[lang]?.[key] || TRANSLATIONS.en[key] || key;
 };
 
 const FEEDBACK_REASONS = [
@@ -534,22 +586,36 @@ export default function ChatPage() {
         {messages.length === 0 ? (
           <div className="h-full flex flex-col items-center justify-center space-y-8">
             <h2 className="text-3xl font-light text-center">
-              How can{" "}
-              <span className="font-bold text-[#3231b1] dark:text-[#86eae9]">
-                Izana
-              </span>{" "}
-              help?
+              {(() => {
+                const text = getTranslation("howCanHelp", langCode);
+                // For English, highlight Izana; for other languages, just show the translated text
+                if (langCode === "en") {
+                  const parts = text.split("Izana");
+                  return (
+                    <>
+                      {parts[0]}
+                      <span className="font-bold text-[#3231b1] dark:text-[#86eae9]">Izana</span>
+                      {parts[1]}
+                    </>
+                  );
+                }
+                return text;
+              })()}
             </h2>
             <div className="grid grid-cols-2 gap-3 w-full">
-              {TOPIC_ICONS.map((t, i) => (
-                <button
-                  key={i}
-                  onClick={() => handleSend(t.query, true)}
-                  className="p-4 bg-white dark:bg-white/5 rounded-3xl border border-black/5 text-center font-bold hover:shadow-md transition-all"
-                >
-                  {t.label}
-                </button>
-              ))}
+              {TOPIC_ICONS.map((t, i) => {
+                const IconComponent = t.icon;
+                return (
+                  <button
+                    key={i}
+                    onClick={() => handleSend(t.query, true)}
+                    className="p-4 bg-white dark:bg-white/5 rounded-3xl border border-black/5 text-center font-bold hover:shadow-md transition-all flex flex-col items-center gap-2"
+                  >
+                    <IconComponent className="w-6 h-6 text-[#3231b1] dark:text-[#86eae9]" />
+                    <span>{t.label}</span>
+                  </button>
+                );
+              })}
             </div>
           </div>
         ) : (
@@ -680,7 +746,7 @@ export default function ChatPage() {
           <div className="flex gap-3">
             <Loader2 className="w-5 h-5 animate-spin text-[#3231b1]" />
             <span className="text-sm text-[#3231b1] font-bold">
-              {LOADING_STEPS[loadingStep]}
+              {getLoadingSteps(langCode)[loadingStep]}
             </span>
           </div>
         )}
