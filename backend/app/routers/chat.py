@@ -255,7 +255,8 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest, background_
                 f"{r.get('name')}: {r.get('value')} {r.get('unit')}"
                 for r in lab_results
             ])
-            search_query = f"Clinical implications of fertility labs: {lab_summary} for {chat_request.treatment or 'fertility'}."
+            treatment_context = f"undergoing {chat_request.treatment}" if chat_request.treatment else "seeking fertility treatment"
+            search_query = f"Explain these fertility lab results for couples {treatment_context}: {lab_summary}. Help them understand what each value means for their fertility journey and reproductive health."
 
             check_prompt = (
                 f"Check labs: {lab_summary}. "
@@ -335,9 +336,13 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest, background_
             )
 
         # 3. GENERATE RESPONSE
-        system_prompt = f"""You are Izana AI, a medical information assistant specialized in reproductive health and fertility.
-Always provide detailed, evidence-based medical context. Speak in the third-person plural ("we recommend", "patients should").
-Always include a disclaimer that this is informational and not a substitute for professional medical advice.
+        system_prompt = f"""You are Izana AI, a medical information assistant specialized in reproductive health and fertility treatment for couples.
+Your responses should be tailored specifically for couples who are undertaking fertility treatment (IVF, IUI, ICSI, ovulation induction, etc.).
+Always address both partners when relevant, acknowledging that fertility treatment is a journey couples take together.
+Provide detailed, evidence-based medical context that helps couples understand their situation and make informed decisions.
+Speak in a supportive, empathetic tone. Use "you" and "your" to address the couple directly.
+Always include a disclaimer that this is informational and not a substitute for professional medical advice from their fertility specialist.
+IMPORTANT: Respond in {language_name}. All your responses must be in {language_name}.
 
 CONTEXT FROM MEDICAL KNOWLEDGE BASE:
 {context_text}
@@ -369,9 +374,9 @@ CONTEXT FROM MEDICAL KNOWLEDGE BASE:
 {{"revised_response": "the full medical response text", "suggested_questions": ["question 1", "question 2", "question 3"]}}
 
 Rules:
-- revised_response: Clean up the draft. Remove all markdown formatting (**, *, #). Keep it professional and thorough.
-- suggested_questions: Generate exactly 3 relevant follow-up questions the patient might ask next based on the topic.
-- Language: Respond in {language_name}.
+- revised_response: Clean up the draft. Remove all markdown formatting (**, *, #). Keep it professional, thorough, and tailored for couples in fertility treatment.
+- suggested_questions: Generate exactly 3 relevant follow-up questions that couples undergoing fertility treatment might ask next based on the topic. Make them specific to fertility treatment context.
+- Language: Respond in {language_name}. All text must be in {language_name}.
 
 Draft to process:
 {draft_response}"""
@@ -396,10 +401,11 @@ Draft to process:
         except Exception as e:
             logger.warning(f"QC formatting failed, using draft: {e}")
             res_text = draft_response
+            # Fallback questions tailored for couples in fertility treatment
             res_qs = [
-                "What are the next steps for my treatment?",
-                "How does lifestyle affect these results?",
-                "What other tests should I consider?"
+                "What are the next steps in our fertility treatment journey?",
+                "How can we improve our chances of success with fertility treatment?",
+                "What lifestyle changes can help support our fertility treatment?"
             ]
 
         # 5. TRANSLATE IF NEEDED
@@ -425,6 +431,9 @@ Draft to process:
         error_msg = str(e)
         logger.error(f"Chat processing error: {error_msg}", exc_info=True)
         
+        # Get language for error message translation
+        language_name = SUPPORTED_LANGUAGES.get(chat_request.language, "English")
+        
         # Provide more helpful error messages based on error type
         if "503" in error_msg or "service" in error_msg.lower() or "unavailable" in error_msg.lower():
             user_message = "The AI service is temporarily unavailable. Please try again in a few moments."
@@ -435,14 +444,26 @@ Draft to process:
         else:
             user_message = "We encountered a processing error. Could you please try asking your question again?"
         
+        # Translate error message if needed
+        if language_name != "English":
+            user_message = await translate_with_groq(user_message, language_name)
+        
+        # Translate fallback questions
+        fallback_questions = [
+            "What is IVF?",
+            "How can we improve our fertility treatment success?",
+            "What fertility tests should we consider?"
+        ]
+        if language_name != "English":
+            translated_fallback = []
+            for q in fallback_questions:
+                translated_fallback.append(await translate_with_groq(q, language_name))
+            fallback_questions = translated_fallback
+        
         return ChatResponse(
             response=user_message,
             citations=[],
-            suggested_questions=[
-                "What is IVF?",
-                "How to improve fertility?",
-                "Tell me about fertility testing."
-            ]
+            suggested_questions=fallback_questions
         )
 
 

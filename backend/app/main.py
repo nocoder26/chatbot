@@ -126,13 +126,13 @@ async def analyze_bloodwork(request: Request, file: UploadFile = File(...)):
         if len(extracted_text) > max_text_length:
             extracted_text = extracted_text[:max_text_length]
 
-        prompt = f"""You are a medical lab data extractor. Your task is to extract EVERY SINGLE test result from the following blood/lab report text.
+        prompt = f"""You are a medical lab data extractor specialized in fertility and reproductive health testing. Your task is to extract EVERY SINGLE test result from the following blood/lab report text.
 
 CRITICAL INSTRUCTIONS:
-- Extract ALL test results found in the report, not just fertility-related ones.
-- Include complete blood count (CBC), metabolic panel, thyroid, hormones, vitamins, lipids, liver function, kidney function, and any other tests present.
+- Extract ALL test results found in the report, prioritizing fertility-related markers (FSH, LH, AMH, Estradiol, Prolactin, TSH, etc.) but also including complete blood count (CBC), metabolic panel, thyroid, hormones, vitamins, lipids, liver function, kidney function, and any other tests present.
 - For each test, extract the test name, numeric value, and unit exactly as shown.
 - Do NOT skip any test. Do NOT summarize. Extract every individual line item.
+- Pay special attention to fertility markers and reproductive health indicators.
 
 RAW TEXT FROM REPORT:
 ---
