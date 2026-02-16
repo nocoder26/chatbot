@@ -3,17 +3,14 @@
 import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
 
-// The supported languages
 const LANGUAGES = [
   { code: "en", name: "English", label: "English", flag: "🇬🇧" },
   { code: "es", name: "Spanish", label: "Español", flag: "🇪🇸" },
   { code: "ja", name: "Japanese", label: "日本語", flag: "🇯🇵" },
-  { code: "zh", name: "Mandarin", label: "普通话", flag: "🇨🇳" },
   { code: "hi", name: "Hindi", label: "हिन्दी", flag: "🇮🇳" },
   { code: "ta", name: "Tamil", label: "தமிழ்", flag: "🇮🇳" },
   { code: "te", name: "Telugu", label: "తెలుగు", flag: "🇮🇳" },
   { code: "ml", name: "Malayalam", label: "മലയാളം", flag: "🇮🇳" },
-  { code: "bn", name: "Bangla", label: "বাংলা", flag: "🇧🇩" },
 ];
 
 export default function LanguageSelection() {
@@ -25,27 +22,26 @@ export default function LanguageSelection() {
   };
 
   return (
-    // Applied the exact Brand Off-White background (#f9f9f9)
     <div className="min-h-screen bg-[#f9f9f9] dark:bg-[#212121] flex flex-col items-center justify-center p-6 antialiased">
-      <motion.div 
+      <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.6, ease: "easeOut" }}
         className="text-center mb-10 max-w-2xl mx-auto flex flex-col items-center"
       >
-        {/* BRAND LOGO INJECTION */}
-        <img 
-          src="/logo.png" 
-          alt="Izana AI" 
-          className="h-20 md:h-28 object-contain mb-8 dark:invert" 
+        <img
+          src="/logo.png"
+          alt="Izana AI"
+          className="h-20 md:h-28 object-contain mb-8 dark:invert"
         />
-        
-        {/* THE GOLDEN CIRCLE VALUE PROPOSITION */}
+
         <div className="bg-white dark:bg-[#3231b1]/10 p-6 rounded-3xl border border-[#86eae9]/30 dark:border-[#3231b1]/30 shadow-[0_4px_20px_rgb(0,0,0,0.02)] mb-8">
           <p className="text-[15px] md:text-base text-[#212121] dark:text-[#f9f9f9] leading-relaxed font-medium">
-            We believe every couple deserves to feel supported and confident on their path to parenthood. 
-            By acting as your safe, anonymous companion, Izana helps you navigate complex fertility treatments 
-            with clarity—empowering you to make informed decisions and achieve the highest possible success rates.
+            We believe every couple deserves to feel supported and confident on
+            their path to parenthood. By acting as your safe, anonymous
+            companion, Izana helps you navigate complex fertility treatments with
+            clarity — empowering you to make informed decisions and achieve the
+            highest possible success rates.
           </p>
         </div>
 
@@ -69,7 +65,6 @@ export default function LanguageSelection() {
             <span className="text-3xl mb-1 grayscale opacity-80 group-hover:grayscale-0 group-hover:opacity-100 transition-all duration-300">
               {lang.flag}
             </span>
-            {/* Hover text uses the Brand Indigo (#3231b1) */}
             <span className="font-semibold text-[15px] text-[#212121] dark:text-[#f9f9f9] group-hover:text-[#3231b1] dark:group-hover:text-[#86eae9] transition-colors">
               {lang.label}
             </span>
@@ -79,14 +74,14 @@ export default function LanguageSelection() {
           </motion.button>
         ))}
       </div>
-      
-      <motion.p 
+
+      <motion.p
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ delay: 0.8 }}
         className="mt-12 text-[10px] text-[#212121]/40 dark:text-[#f9f9f9]/40 uppercase tracking-widest font-semibold"
       >
-        © 2026 Izana AI • Secure & Private
+        &copy; 2026 Izana AI &bull; Secure &amp; Private
       </motion.p>
     </div>
   );
