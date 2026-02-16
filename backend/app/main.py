@@ -10,7 +10,7 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from app.routers import chat, admin
 from dotenv import load_dotenv
-from openai import OpenAI
+from groq import Groq
 from pypdf import PdfReader
 
 load_dotenv()
@@ -53,12 +53,12 @@ app.include_router(chat.router)
 app.include_router(admin.router)
 
 # --- AI CLIENT ---
-openai_api_key = os.getenv("OPENAI_API_KEY")
-if not openai_api_key:
-    logger.warning("OPENAI_API_KEY not set - /analyze-bloodwork will not function")
-client = OpenAI(api_key=openai_api_key) if openai_api_key else None
+groq_api_key = os.getenv("GROQ_API_KEY")
+if not groq_api_key:
+    logger.warning("GROQ_API_KEY not set - /analyze-bloodwork will not function")
+client = Groq(api_key=groq_api_key) if groq_api_key else None
 
-BLOODWORK_MODEL = os.getenv("BLOODWORK_MODEL", "gpt-4o-mini")
+BLOODWORK_MODEL = os.getenv("BLOODWORK_MODEL", "llama-3.3-70b-versatile")
 
 
 async def retry_api_call(func, max_retries=3, delay=1):
@@ -90,7 +90,7 @@ def health_check():
 async def analyze_bloodwork(request: Request, file: UploadFile = File(...)):
     """Receives a PDF of blood work, extracts text, and maps to JSON."""
     if not client:
-        raise HTTPException(status_code=503, detail="OpenAI API key not configured")
+        raise HTTPException(status_code=503, detail="Groq API key not configured")
 
     if not file.filename:
         raise HTTPException(status_code=400, detail="No file provided")
