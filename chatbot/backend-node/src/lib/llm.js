@@ -4,8 +4,8 @@ const COHERE_API_KEY = process.env.COHERE_API_KEY;
 const COHERE_CHAT_URL = 'https://api.cohere.com/v2/chat';
 const COHERE_MODEL = process.env.COHERE_CHAT_MODEL || 'command-r-plus-08-2024';
 const DEFAULT_MAX_TOKENS = parseInt(process.env.LLM_MAX_TOKENS || '1024', 10);
-// Keep under typical gateway timeout (e.g. 60s) so we can return error instead of 502
-const CHAT_TIMEOUT_MS = parseInt(process.env.LLM_CHAT_TIMEOUT_MS || '50000', 10);
+// PHASE 7: Reduced default timeout from 50s to 30s for faster failure feedback
+const CHAT_TIMEOUT_MS = parseInt(process.env.LLM_CHAT_TIMEOUT_MS || '30000', 10);
 
 const PROVIDER = (process.env.LLM_PROVIDER || 'groq').toLowerCase();
 const MODEL = process.env.LLM_MODEL || 'llama-3.3-70b-versatile';

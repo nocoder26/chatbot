@@ -26,6 +26,7 @@ import {
   fetchUserDrillDown,
   fetchAdminUsers,
   fetchPendingImprovements,
+  fetchQueryDocuments,
   approveGap,
   dismissGap,
   clearAdminTestData,
@@ -36,6 +37,7 @@ import {
   type UserAnalytics,
   type AdminUser,
   type PendingImprovement,
+  type QueryDocumentItem,
 } from "@/lib/api";
 
 // --- BAR CHART ---
@@ -136,7 +138,7 @@ function formatDuration(ms: number): string {
 }
 
 function Dashboard({ adminKey }: { adminKey: string }) {
-  const [activeTab, setActiveTab] = useState<"gaps" | "feedback" | "documents" | "analytics" | "users">("gaps");
+  const [activeTab, setActiveTab] = useState<"gaps" | "feedback" | "documents" | "analytics" | "users" | "queryTracking">("gaps");
   const [stats, setStats] = useState<AdminStats>({ gaps: [], gapsChat: [], gapsBloodwork: [], feedback: [], doc_usage: [], kb_sources: [], insufficient_kb: [], sources_ranking: [] });
   const [analytics, setAnalytics] = useState<UserAnalytics | null>(null);
   const [userList, setUserList] = useState<AdminUser[]>([]);
@@ -151,21 +153,26 @@ function Dashboard({ adminKey }: { adminKey: string }) {
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [clearLoading, setClearLoading] = useState(false);
   const [clearResult, setClearResult] = useState<string | null>(null);
+  // PHASE 6: Query document tracking state
+  const [queryDocuments, setQueryDocuments] = useState<QueryDocumentItem[]>([]);
 
   const loadData = async () => {
     setLoading(true);
     setError("");
     try {
-      const [statsData, analyticsData, usersData, improvementsData] = await Promise.all([
+      // PHASE 6: Added fetchQueryDocuments to parallel fetch
+      const [statsData, analyticsData, usersData, improvementsData, queryDocsData] = await Promise.all([
         fetchAdminStats(adminKey),
         fetchUserAnalytics(adminKey),
         fetchAdminUsers(adminKey),
         fetchPendingImprovements(adminKey).catch(() => ({ total: 0, items: [] })),
+        fetchQueryDocuments(adminKey).catch(() => ({ total: 0, items: [] })),
       ]);
       setStats(statsData);
       setAnalytics(analyticsData);
       setUserList(usersData.users || []);
       setPendingImprovements(improvementsData.items || []);
+      setQueryDocuments(queryDocsData.items || []);
       setLastUpdated(new Date());
     } catch (err) {
       if (err instanceof Error && err.message.includes("Unauthorized")) {
@@ -266,6 +273,7 @@ function Dashboard({ adminKey }: { adminKey: string }) {
   const tabs = [
     { id: "gaps" as const, label: "Knowledge Gaps", color: "text-red-500 border-red-500 bg-red-50 dark:bg-red-900/10" },
     { id: "documents" as const, label: "Document Usage & KB Sources", color: "text-izana-indigo border-izana-indigo bg-izana-indigo/5" },
+    { id: "queryTracking" as const, label: "Query Tracking", color: "text-emerald-600 border-emerald-600 bg-emerald-50 dark:bg-emerald-900/10" },
     { id: "feedback" as const, label: "User Feedback", color: "text-izana-teal border-izana-teal bg-izana-teal/10" },
     { id: "analytics" as const, label: "User Analytics", color: "text-izana-coral border-izana-coral bg-izana-coral/10" },
     { id: "users" as const, label: "Users", color: "text-purple-600 border-purple-600 bg-purple-50 dark:bg-purple-900/10" },
@@ -633,6 +641,68 @@ function Dashboard({ adminKey }: { adminKey: string }) {
                     </tbody>
                   </table>
                 </section>
+              </div>
+            )}
+
+            {/* PHASE 6: QUERY TRACKING */}
+            {activeTab === "queryTracking" && (
+              <div className="p-4">
+                <h4 className="text-sm font-bold text-gray-500 uppercase tracking-wider mb-3">Per-Query Document Tracking</h4>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">Shows which KB documents were used for each query, sufficiency status, and whether general knowledge was used.</p>
+                <table className="w-full">
+                  <thead className="bg-gray-50 dark:bg-[#333]">
+                    <tr>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Time</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Query</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">KB Sources</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase w-28">Sufficiency</th>
+                      <th className="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase w-24">General KB</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200 dark:divide-[#404040]">
+                    {queryDocuments.map((item) => (
+                      <tr key={item.id} className="hover:bg-gray-50 dark:hover:bg-[#333]">
+                        <td className="px-4 py-3 whitespace-nowrap text-xs text-gray-500">
+                          {new Date(item.timestamp).toLocaleDateString()}<br />
+                          {new Date(item.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                        </td>
+                        <td className="px-4 py-3 text-sm text-izana-dark dark:text-izana-light max-w-xs truncate" title={item.query}>
+                          {item.query || "—"}
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="flex flex-wrap gap-1">
+                            {item.sources.slice(0, 3).map((src, i) => (
+                              <span key={i} className="text-[10px] px-2 py-0.5 rounded-full bg-izana-indigo/10 text-izana-indigo font-medium">
+                                {src.doc_id} ({(src.score * 100).toFixed(0)}%)
+                              </span>
+                            ))}
+                            {item.sources.length === 0 && <span className="text-xs text-gray-400">None</span>}
+                            {item.sources.length > 3 && <span className="text-[10px] text-gray-400">+{item.sources.length - 3} more</span>}
+                          </div>
+                        </td>
+                        <td className="px-4 py-3 whitespace-nowrap">
+                          <span className={`text-xs px-2 py-1 rounded-full font-medium ${
+                            item.sufficiency === "sufficient" ? "bg-green-100 text-green-700" :
+                            item.sufficiency === "partial" ? "bg-yellow-100 text-yellow-700" :
+                            "bg-red-100 text-red-700"
+                          }`}>
+                            {item.sufficiency}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-center">
+                          {item.usedGeneralKnowledge ? (
+                            <span className="text-orange-500 font-bold text-xs">Yes</span>
+                          ) : (
+                            <span className="text-gray-400 text-xs">No</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                    {queryDocuments.length === 0 && (
+                      <tr><td colSpan={5} className="p-8 text-center text-gray-400">No query tracking data yet.</td></tr>
+                    )}
+                  </tbody>
+                </table>
               </div>
             )}
 

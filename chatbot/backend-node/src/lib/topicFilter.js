@@ -20,7 +20,11 @@ const OFF_TOPIC_KEYWORDS = [
   'stock market', 'bitcoin', 'recipe for', 'how to cook', 'today\'s weather', 'forecast',
 ];
 
-const CLASSIFIER_TIMEOUT_MS = 6000;
+// PHASE 2: Strong on-topic keywords that can fast-path to on-topic without LLM
+const STRONG_ON_TOPIC = ['ivf', 'iui', 'fertility', 'embryo', 'amh', 'fsh', 'ovulation', 'sperm', 'icsi', 'blastocyst', 'follicle', 'progesterone', 'estrogen'];
+
+// PHASE 2: Reduced timeout from 6s to 3s
+const CLASSIFIER_TIMEOUT_MS = parseInt(process.env.TOPIC_CLASSIFIER_TIMEOUT_MS || '3000', 10);
 const CLASSIFIER_MAX_TOKENS = 80;
 
 const CLASSIFIER_SYSTEM = `You are a strict classifier. Output ONLY valid JSON, no other text.
@@ -37,18 +41,27 @@ Examples:
 "Tell me a joke" -> {"onTopic": false, "confidence": 0.9}`;
 
 /**
- * Fast path OFF-TOPIC only: if message has strong off-topic terms and no on-topic terms, return off-topic without LLM.
- * We never fast-path to on-topic so that phrases like "I had eggs for breakfast" are still classified by LLM.
+ * Fast path: Skip LLM for obvious on-topic/off-topic queries.
+ * PHASE 2: Added fast-path for strong on-topic fertility terms (ivf, iui, etc.)
  * @param {string} message
  * @returns {{ onTopic: boolean, confidence: number } | null} null if fast path did not apply
  */
 function keywordFastPath(message) {
   const lower = message.trim().toLowerCase();
   if (lower.length < 2) return null;
+
+  // PHASE 2: Fast-path ON-TOPIC for strong fertility keywords (skip LLM for obvious fertility queries)
+  const hasStrongOnTopic = STRONG_ON_TOPIC.some((term) => lower.includes(term));
+  if (hasStrongOnTopic) return { onTopic: true, confidence: 0.95 };
+
+  // Check for general on-topic terms (still run LLM for accuracy)
   const hasOnTopic = ON_TOPIC_KEYWORDS.some((term) => lower.includes(term));
-  if (hasOnTopic) return null; // always run LLM when any on-topic keyword present (second layer for accuracy)
+  if (hasOnTopic) return null; // run LLM for nuanced classification
+
+  // Fast-path OFF-TOPIC if clear off-topic terms and no on-topic terms
   const hasOffTopic = OFF_TOPIC_KEYWORDS.some((term) => lower.includes(term));
   if (hasOffTopic) return { onTopic: false, confidence: 0.85 };
+
   return null;
 }
 

@@ -107,58 +107,6 @@ router.post('/', verifyJWT, requireConsent, async (req, res) => {
       effectiveMessage += '\n\nCurrent treatment context: ' + treatment.trim();
     }
 
-    // Topic filter: classify as reproductive health or off-topic (never block on classifier failure)
-    let onTopic = true;
-    let confidence = 0.5;
-    try {
-      const classified = await classifyReproductiveHealthQuery(message.trim(), language);
-      onTopic = classified.onTopic;
-      confidence = classified.confidence;
-    } catch (e) {
-      console.error('[Chat] Topic classification failed, allowing query through:', e.message);
-    }
-    prisma.userActivity.create({
-      data: {
-        userId,
-        type: 'topic_classification',
-        metadata: { query: message.trim().slice(0, 200), onTopic, confidence, language },
-      },
-    }).catch((e) => console.error('Topic classification log error:', e));
-
-    if (!onTopic && confidence >= TOPIC_FILTER_THRESHOLD) {
-      let offTopicChat;
-      if (chatId) {
-        offTopicChat = await prisma.chat.findFirst({ where: { id: chatId, userId } });
-        if (!offTopicChat) return res.status(404).json({ error: 'Chat not found' });
-      } else {
-        offTopicChat = await prisma.chat.create({
-          data: {
-            userId,
-            title: title && typeof title === 'string' ? title.trim() : message.trim().slice(0, 40) + (message.trim().length > 40 ? '...' : ''),
-          },
-        });
-      }
-      const userContent = message.trim();
-      const userEncrypted = isEncryptionEnabled() ? encryptField(userContent) : null;
-      await prisma.message.create({
-        data: {
-          chatId: offTopicChat.id,
-          role: 'user',
-          content: userContent,
-          encryptedData: userEncrypted ? JSON.stringify(userEncrypted) : null,
-          encryptionMeta: userEncrypted ? { encrypted: true, version: 1 } : null,
-        },
-      });
-      const politeMessage = getOffTopicMessage(language);
-      const threeQuestions = getOffTopicSuggestedQuestions(language);
-      return res.status(200).json({
-        response: politeMessage,
-        suggested_questions: threeQuestions,
-        citations: [],
-        offTopic: true,
-      });
-    }
-
     const category = message.trim().toLowerCase().includes('blood') ? 'bloodwork' : 'general';
     const adjustments = await getPromptAdjustments(category);
 
@@ -180,26 +128,80 @@ router.post('/', verifyJWT, requireConsent, async (req, res) => {
       });
     }
 
-    // New retrieval pipeline: dense KB (top 30) + BM25 fusion -> top 6, conversation memory, sufficiency
+    // PHASE 1: Parallelize topic filter + KB retrieval for ~6s latency reduction
+    const [topicResult, retrievalResult] = await Promise.allSettled([
+      classifyReproductiveHealthQuery(message.trim(), language),
+      retrieveKB(effectiveMessage),
+    ]);
+
+    // Extract topic classification result
+    let onTopic = true;
+    let confidence = 0.5;
+    if (topicResult.status === 'fulfilled') {
+      onTopic = topicResult.value.onTopic;
+      confidence = topicResult.value.confidence;
+    } else {
+      console.error('[Chat] Topic classification failed, allowing query through:', topicResult.reason?.message);
+    }
+
+    // Extract KB retrieval result
     let kb_dense_candidates = [];
     let kb_final_context = [];
     let sufficiency = { label: 'insufficient', score: 0, reason: 'No retrieval' };
     let memoryLines = [];
     let queryVector = [];
-    try {
-      const { kb_dense_candidates: dense, kb_final_context: final, queryVector: qv } = await retrieveKB(effectiveMessage);
-      kb_dense_candidates = dense;
-      kb_final_context = final;
-      queryVector = qv;
+    if (retrievalResult.status === 'fulfilled') {
+      kb_dense_candidates = retrievalResult.value.kb_dense_candidates || [];
+      kb_final_context = retrievalResult.value.kb_final_context || [];
+      queryVector = retrievalResult.value.queryVector || [];
       sufficiency = checkSufficiency(kb_final_context, effectiveMessage);
+    } else {
+      console.error('[Retrieval] Pipeline failed, proceeding without context:', retrievalResult.reason?.message);
+    }
 
-      const memoryMatches = await queryConversationMemory(queryVector, userId, chat.id, 3);
-      memoryLines = memoryMatches.map((m) => {
-        const content = m.metadata?.content || m.metadata?.text || '';
-        return content.slice(0, 400);
-      }).filter(Boolean);
+    // Log topic classification
+    prisma.userActivity.create({
+      data: {
+        userId,
+        type: 'topic_classification',
+        metadata: { query: message.trim().slice(0, 200), onTopic, confidence, language },
+      },
+    }).catch((e) => console.error('Topic classification log error:', e));
+
+    // Handle off-topic queries
+    if (!onTopic && confidence >= TOPIC_FILTER_THRESHOLD) {
+      const userContent = message.trim();
+      const userEncrypted = isEncryptionEnabled() ? encryptField(userContent) : null;
+      await prisma.message.create({
+        data: {
+          chatId: chat.id,
+          role: 'user',
+          content: userContent,
+          encryptedData: userEncrypted ? JSON.stringify(userEncrypted) : null,
+          encryptionMeta: userEncrypted ? { encrypted: true, version: 1 } : null,
+        },
+      });
+      const politeMessage = getOffTopicMessage(language);
+      const threeQuestions = getOffTopicSuggestedQuestions(language);
+      return res.status(200).json({
+        response: politeMessage,
+        suggested_questions: threeQuestions,
+        citations: [],
+        offTopic: true,
+      });
+    }
+
+    // Fetch conversation memory (depends on queryVector from retrieval)
+    try {
+      if (queryVector.length > 0) {
+        const memoryMatches = await queryConversationMemory(queryVector, userId, chat.id, 3);
+        memoryLines = memoryMatches.map((m) => {
+          const content = m.metadata?.content || m.metadata?.text || '';
+          return content.slice(0, 400);
+        }).filter(Boolean);
+      }
     } catch (err) {
-      console.error('[Retrieval] Pipeline failed, proceeding without context:', err.message);
+      console.error('[Memory] Conversation memory query failed:', err.message);
     }
 
     let systemPrompt = buildSystemPrompt(language);
@@ -209,6 +211,25 @@ router.post('/', verifyJWT, requireConsent, async (req, res) => {
 
     const kbContextText = kb_final_context.map((c) => c.text).filter(Boolean).join('\n---\n');
     const used_general_knowledge = sufficiency.label === 'insufficient';
+
+    // PHASE 3: Track whether KB context was available (for kbGap flag in response)
+    const hasKBContext = kb_final_context.length > 0;
+
+    // PHASE 3: Log knowledge gap for admin dashboard when KB has no context (GDPR: no PII, hashed userId)
+    if (!hasKBContext) {
+      prisma.userActivity.create({
+        data: {
+          userId,
+          type: 'knowledge_gap',
+          metadata: {
+            question: message.trim().slice(0, 200), // Truncated for privacy
+            source: 'chat_no_kb_match',
+            language,
+            timestamp: new Date().toISOString(),
+          },
+        },
+      }).catch((e) => console.error('Gap log error:', e));
+    }
 
     if (kbContextText) {
       systemPrompt += `\n\nUse the following verified medical context from the knowledge base. Prioritize it and never contradict it:\n${kbContextText}`;
@@ -236,6 +257,14 @@ router.post('/', verifyJWT, requireConsent, async (req, res) => {
 
     const ragCitations = [...new Set(kb_final_context.map((c) => c.doc_id).filter(Boolean))];
 
+    // PHASE 4: Build KB references array for response
+    const kbReferences = kb_final_context.map((c) => ({
+      doc_id: c.doc_id,
+      chunk_id: c.chunk_id,
+      score: Math.round((c.fused_score || 0) * 100) / 100,
+      text_preview: (c.text || '').slice(0, 100),
+    }));
+
     if (stream) {
       res.setHeader('Content-Type', 'text/event-stream');
       res.setHeader('Cache-Control', 'no-cache');
@@ -258,6 +287,10 @@ router.post('/', verifyJWT, requireConsent, async (req, res) => {
         res.write(`data: ${JSON.stringify({ suggested_questions: questions })}\n\n`);
         if (typeof res.flush === 'function') res.flush();
       }
+
+      // PHASE 4: Send KB references for streaming response
+      res.write(`data: ${JSON.stringify({ kbReferences, kbGap: !hasKBContext })}\n\n`);
+      if (typeof res.flush === 'function') res.flush();
 
       res.write('data: [DONE]\n\n');
       res.end();
@@ -324,16 +357,19 @@ router.post('/', verifyJWT, requireConsent, async (req, res) => {
         };
         prisma.userActivity.create({ data: { userId, type: 'retrieval_event', metadata: retrievalMeta2 } }).catch((e) => console.error('Retrieval event log error:', e));
 
-        return { cleanedText, questions, ragCitations, sufficiency };
+        return { cleanedText, questions, ragCitations, sufficiency, kbReferences, kbGap: !hasKBContext };
       })();
 
       try {
         const result = await Promise.race([workPromise, timeoutPromise]);
         if (result && !res.headersSent) {
+          // PHASE 4: Include kbReferences and kbGap in non-streaming response
           res.json({
             response: result.cleanedText,
             suggested_questions: result.questions,
             citations: result.ragCitations,
+            kbReferences: result.kbReferences,
+            kbGap: result.kbGap,
             matchScore: result.sufficiency?.score,
           });
         }

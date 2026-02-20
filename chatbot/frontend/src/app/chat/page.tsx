@@ -17,6 +17,14 @@ import {
 } from "@/lib/api";
 
 // --- TYPES ---
+// PHASE 5: KB Reference type
+interface KBReference {
+  doc_id: string;
+  chunk_id: string;
+  score: number;
+  text_preview?: string;
+}
+
 interface ChatMessage {
   id: number | string;
   type: "user" | "bot";
@@ -29,6 +37,8 @@ interface ChatMessage {
   rating?: number;
   feedbackReason?: string;
   isOffTopic?: boolean;
+  kbReferences?: KBReference[];
+  kbGap?: boolean;
 }
 
 // --- TOPIC SHORTCUTS ---
@@ -97,6 +107,8 @@ const TRANSLATIONS: Record<string, Record<string, string>> = {
     chatError: "We encountered an error connecting to the AI service. Please try again.",
     bloodworkError: "We encountered an error analyzing your blood work. Please try again.",
     scopeReminder: "Scope reminder",
+    sourcesUsed: "Knowledge sources used",
+    kbGapNote: "Answer based on general medical knowledge",
   },
   ta: {
     howCanHelp: "இசானா எவ்வாறு உதவ முடியும்?",
@@ -133,6 +145,8 @@ const TRANSLATIONS: Record<string, Record<string, string>> = {
     chatError: "AI சேவையில் பிழை. மீண்டும் முயற்சிக்கவும்.",
     bloodworkError: "இரத்தப் பரிசோதனை பகுப்பாய்வில் பிழை. மீண்டும் முயற்சிக்கவும்.",
     scopeReminder: "வரம்பு நினைவூட்டல்",
+    sourcesUsed: "பயன்படுத்தப்பட்ட அறிவு ஆதாரங்கள்",
+    kbGapNote: "பொது மருத்துவ அறிவின் அடிப்படையில் பதில்",
   },
   hi: {
     howCanHelp: "इज़ाना कैसे मदद कर सकता है?",
@@ -169,6 +183,8 @@ const TRANSLATIONS: Record<string, Record<string, string>> = {
     chatError: "AI सेवा में त्रुटि। पुनः प्रयास करें।",
     bloodworkError: "रक्त विश्लेषण में त्रुटि। पुनः प्रयास करें।",
     scopeReminder: "दायरा अनुस्मारक",
+    sourcesUsed: "उपयोग किए गए ज्ञान स्रोत",
+    kbGapNote: "सामान्य चिकित्सा ज्ञान पर आधारित उत्तर",
   },
   te: {
     howCanHelp: "ఇజానా ఎలా సహాయం చేయగలదు?",
@@ -205,6 +221,8 @@ const TRANSLATIONS: Record<string, Record<string, string>> = {
     chatError: "AI సేవలో లోపం. మళ్ళీ ప్రయత్నించండి.",
     bloodworkError: "రక్త పరీక్ష విశ్లేషణలో లోపం. మళ్ళీ ప్రయత్నించండి.",
     scopeReminder: "స్కోప్ రిమైండర్",
+    sourcesUsed: "ఉపయోగించిన జ్ఞాన వనరులు",
+    kbGapNote: "సాధారణ వైద్య జ్ఞానం ఆధారంగా సమాధానం",
   },
   ml: {
     howCanHelp: "ഇസാന എങ്ങനെ സഹായിക്കും?",
@@ -241,6 +259,8 @@ const TRANSLATIONS: Record<string, Record<string, string>> = {
     chatError: "AI സേവനത്തിൽ പിശക്. വീണ്ടും ശ്രമിക്കുക.",
     bloodworkError: "രക്ത പരിശോധനാ വിശകലനത്തിൽ പിശക്. വീണ്ടും ശ്രമിക്കുക.",
     scopeReminder: "സ്കോപ്പ് ഓർമ്മപ്പെടുത്തൽ",
+    sourcesUsed: "ഉപയോഗിച്ച അറിവ് ഉറവിടങ്ങൾ",
+    kbGapNote: "പൊതു വൈദ്യ അറിവിനെ അടിസ്ഥാനമാക്കിയുള്ള ഉത്തരം",
   },
   es: {
     howCanHelp: "¿Cómo puede ayudar Izana?",
@@ -277,6 +297,8 @@ const TRANSLATIONS: Record<string, Record<string, string>> = {
     chatError: "Error en el servicio AI. Inténtalo de nuevo.",
     bloodworkError: "Error al analizar los resultados. Inténtalo de nuevo.",
     scopeReminder: "Recordatorio de alcance",
+    sourcesUsed: "Fuentes de conocimiento utilizadas",
+    kbGapNote: "Respuesta basada en conocimiento médico general",
   },
   ja: {
     howCanHelp: "イザナはどのようにお手伝いできますか？",
@@ -313,6 +335,8 @@ const TRANSLATIONS: Record<string, Record<string, string>> = {
     chatError: "AIサービスでエラーが発生しました。もう一度お試しください。",
     bloodworkError: "血液分析でエラーが発生しました。もう一度お試しください。",
     scopeReminder: "対象範囲の案内",
+    sourcesUsed: "使用された知識ソース",
+    kbGapNote: "一般的な医学知識に基づく回答",
   },
   fr: {
     howCanHelp: "Comment Izana peut-il vous aider ?",
@@ -349,6 +373,8 @@ const TRANSLATIONS: Record<string, Record<string, string>> = {
     chatError: "Erreur du service IA. Veuillez réessayer.",
     bloodworkError: "Erreur d'analyse sanguine. Veuillez réessayer.",
     scopeReminder: "Rappel du champ",
+    sourcesUsed: "Sources de connaissances utilisées",
+    kbGapNote: "Réponse basée sur des connaissances médicales générales",
   },
   pt: {
     howCanHelp: "Como a Izana pode ajudar?",
@@ -385,6 +411,8 @@ const TRANSLATIONS: Record<string, Record<string, string>> = {
     chatError: "Erro no serviço de IA. Tente novamente.",
     bloodworkError: "Erro na análise sanguínea. Tente novamente.",
     scopeReminder: "Lembrete de escopo",
+    sourcesUsed: "Fontes de conhecimento utilizadas",
+    kbGapNote: "Resposta baseada em conhecimento médico geral",
   },
 };
 
@@ -759,6 +787,8 @@ function ChatPageContent() {
           userQuery: query,
           rating: 0,
           isOffTopic: data.offTopic === true,
+          kbReferences: data.kbReferences || [],
+          kbGap: data.kbGap || false,
         },
       ]);
     } catch (err) {
@@ -1132,6 +1162,30 @@ function ChatPageContent() {
                       </div>
                     </div>
                   )}
+
+                {/* PHASE 5: KB References - knowledge sources used */}
+                {m.type === "bot" && !m.isAnimating && m.kbReferences && m.kbReferences.length > 0 && (
+                  <div className="mt-3 pt-2 border-t border-white/10">
+                    <p className="text-xs text-white/50 mb-2">
+                      {getTranslation("sourcesUsed", langCode)} ({m.kbReferences.length})
+                    </p>
+                    <div className="space-y-1">
+                      {m.kbReferences.slice(0, 3).map((ref, i) => (
+                        <div key={i} className="text-xs bg-white/5 px-3 py-2 rounded-lg">
+                          <span className="font-medium text-white/70">{ref.doc_id}</span>
+                          <span className="text-white/40 ml-2">({Math.round(ref.score * 100)}% match)</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* PHASE 5: KB Gap indicator - shows when LLM used pre-trained knowledge */}
+                {m.type === "bot" && !m.isAnimating && m.kbGap && (
+                  <p className="text-xs text-orange-300/70 mt-2">
+                    {getTranslation("kbGapNote", langCode)}
+                  </p>
+                )}
 
                 {/* Follow-Up Questions */}
                 {m.type === "bot" &&

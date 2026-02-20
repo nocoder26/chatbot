@@ -495,4 +495,37 @@ router.post('/approve-gap', verifyAdmin, async (req, res) => {
   }
 });
 
+/**
+ * GET /api/admin/query-documents
+ * PHASE 6: Per-query document tracking for admin dashboard
+ * Shows which KB documents were used for each query
+ */
+router.get('/query-documents', verifyAdmin, async (req, res) => {
+  try {
+    logAuditEvent({ action: 'admin_access', tier: 'tier1', actorType: 'admin', details: { endpoint: '/query-documents' } });
+    const events = await prisma.userActivity.findMany({
+      where: { type: 'retrieval_event' },
+      orderBy: { createdAt: 'desc' },
+      take: 200,
+    });
+
+    const items = events.map((e) => ({
+      id: e.id,
+      timestamp: e.createdAt,
+      query: e.metadata?.query_text || '',
+      sources: (e.metadata?.kb_final_context || []).map((c) => ({
+        doc_id: c.doc_id,
+        score: c.fused_score,
+      })),
+      sufficiency: e.metadata?.sufficiency?.label || 'unknown',
+      usedGeneralKnowledge: e.metadata?.used_general_knowledge || false,
+    }));
+
+    res.json({ total: items.length, items });
+  } catch (err) {
+    console.error('Admin query-documents error:', err);
+    return res.status(500).json({ error: 'Failed to fetch query documents' });
+  }
+});
+
 export default router;

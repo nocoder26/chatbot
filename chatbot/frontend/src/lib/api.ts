@@ -33,11 +33,21 @@ export interface ChatPayload {
   treatment?: string;
 }
 
+// PHASE 5: KB reference type for chat responses
+export interface KBReference {
+  doc_id: string;
+  chunk_id: string;
+  score: number;
+  text_preview?: string;
+}
+
 export interface ChatResponse {
   response: string;
   citations: string[];
   suggested_questions: string[];
   offTopic?: boolean;
+  kbReferences?: KBReference[];
+  kbGap?: boolean;
 }
 
 export interface FeedbackPayload {
@@ -685,6 +695,29 @@ export async function dismissGap(adminKey: string, gapId: string): Promise<{ ok:
     body: JSON.stringify({ gapId, action: "dismiss" }),
   });
   if (!response.ok) throw new Error("Failed to dismiss gap");
+  return response.json();
+}
+
+// PHASE 6: Query document tracking types and API
+export interface QueryDocumentItem {
+  id: string;
+  timestamp: string;
+  query: string;
+  sources: { doc_id: string; score: number }[];
+  sufficiency: string;
+  usedGeneralKnowledge: boolean;
+}
+
+export interface QueryDocumentsResponse {
+  total: number;
+  items: QueryDocumentItem[];
+}
+
+export async function fetchQueryDocuments(adminKey: string): Promise<QueryDocumentsResponse> {
+  const response = await fetch(resolveApiUrl("/api/admin/query-documents"), {
+    headers: { "X-Admin-Key": adminKey },
+  });
+  if (!response.ok) throw new Error("Failed to fetch query documents");
   return response.json();
 }
 
