@@ -39,5 +39,5 @@ npm-debug.log*
 *.sqlite
 *.sqlite3
 
-# Claude
-.claude/
+# Allow PDF files in backend/data
+!backend/data/*.pdf
