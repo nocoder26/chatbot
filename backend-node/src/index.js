@@ -35,7 +35,7 @@ const AVATAR_URLS = [
 ];
 
 const app = express();
-const PORT = process.env.PORT || 8080;
+const port = process.env.PORT || 8080;
 
 // Startup checks for critical environment variables
 ['JWT_SECRET', 'DATABASE_URL'].forEach((key) => {
@@ -250,8 +250,8 @@ initValkey().catch((err) => {
   console.warn('[Startup] Valkey initialization failed (non-blocking):', err.message);
 });
 
-const server = app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Server running on 0.0.0.0:${PORT}`);
+const server = app.listen(port, '0.0.0.0', () => {
+  console.log(`Server running on port ${port}`);
 });
 
 function shutdown(signal) {
