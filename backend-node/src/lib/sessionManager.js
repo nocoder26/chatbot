@@ -2,7 +2,7 @@
  * Session Manager: CRUD operations for Valkey-based session tracking.
  * Tracks user sessions with chat history (last 4 messages), context cache, and retrieval scores.
  */
-import { v4 as uuidv4 } from 'crypto';
+import { randomUUID } from 'crypto';
 import * as valkey from './valkey.js';
 import { hashUserId } from '../gdpr/sanitizer.js';
 
