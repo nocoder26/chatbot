@@ -1,0 +1,28 @@
+# Virtual environments
+backend/venv/
+venv/
+.venv/
+
+# Node modules
+frontend/node_modules/
+node_modules/
+
+# Data directory (DB managed via Railway volume)
+backend/data/
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Git
+.git/
+
+# IDE
+.vscode/
+.idea/

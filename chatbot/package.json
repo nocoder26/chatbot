@@ -1,0 +1,19 @@
+{
+  "private": true,
+  "name": "izana-ai",
+  "description": "Izana AI monorepo root — quality gate tooling",
+  "version": "1.0.0",
+  "scripts": {
+    "prepare": "husky",
+    "quality-gate": "bash scripts/smart-test.sh",
+    "test": "cd backend-node && npx vitest run && cd ../frontend && npx vitest run",
+    "test:e2e": "npx playwright test",
+    "test:e2e:full": "npx playwright test --repeat-each=5",
+    "test:all": "npm test && npm run test:e2e",
+    "test:coverage": "cd backend-node && npx vitest run --coverage && cd ../frontend && npx vitest run --coverage"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.58.2",
+    "husky": "^9"
+  }
+}

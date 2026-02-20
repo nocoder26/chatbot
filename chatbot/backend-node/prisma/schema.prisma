@@ -1,0 +1,187 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id             String   @id @default(uuid())
+  username       String
+  usernameHash   String?
+  passphraseHash String?
+  avatarUrl      String?
+  createdAt      DateTime @default(now())
+
+  chats               Chat[]
+  bloodWorkReports    BloodWorkReport[]
+  webAuthnCredentials WebAuthnCredential[]
+  activities          UserActivity[]
+  consents            Consent[]
+  pushSubscriptions   PushSubscription[]
+}
+
+model WebAuthnCredential {
+  id           String   @id @default(uuid())
+  userId       String
+  credentialId String   @unique
+  publicKey    Bytes
+  counter      BigInt   @default(0)
+  transports   String[] @default([])
+  createdAt    DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model UserActivity {
+  id        String   @id @default(uuid())
+  userId    String
+  type      String
+  metadata  Json     @default("{}")
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model BloodWorkReport {
+  id              String   @id @default(uuid())
+  userId          String
+  results         Json
+  summary         String?
+  encryptedData   String?
+  encryptionMeta  Json?
+  createdAt       DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Chat {
+  id        String   @id @default(uuid())
+  userId    String
+  title     String
+  createdAt DateTime @default(now())
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages Message[]
+}
+
+model Message {
+  id              String   @id @default(uuid())
+  chatId          String
+  role            String
+  content         String
+  encryptedData   String?
+  encryptionMeta  Json?
+  createdAt       DateTime @default(now())
+
+  chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+}
+
+// --------------- Push Subscriptions (PWA) ---------------
+
+model PushSubscription {
+  id        String   @id @default(uuid())
+  userId    String
+  endpoint  String   @unique
+  p256dh    String
+  auth      String
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// --------------- GDPR: Consent & Rights ---------------
+
+model Consent {
+  id                   String    @id @default(uuid())
+  userId               String
+  consentVersion       String
+  healthDataConsent    Boolean
+  modelTrainingConsent Boolean
+  grantedAt            DateTime  @default(now())
+  withdrawnAt          DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model DeletionRequest {
+  id            String    @id @default(uuid())
+  userId        String
+  requestedAt   DateTime  @default(now())
+  completedAt   DateTime?
+  tier1Deleted  Boolean   @default(false)
+  tier2Excluded Boolean   @default(false)
+  status        String    @default("pending")
+}
+
+model ProcessingRestriction {
+  id            String   @id @default(uuid())
+  userId        String   @unique
+  restrictTier2 Boolean  @default(false)
+  restrictedAt  DateTime @default(now())
+}
+
+// --------------- GDPR: Tier 2 - Anonymized Training Data ---------------
+
+model AnonymizedQAPair {
+  id                String   @id @default(uuid())
+  questionHash      String
+  question          String
+  answer            String
+  qualityScore      Float?
+  language          String
+  category          String?
+  kAnonymityGroup   String?
+  metadata          Json?
+  createdAt         DateTime @default(now())
+  sourceExtractedAt DateTime
+  expiresAt         DateTime
+}
+
+model AnonymizedBloodwork {
+  id                String   @id @default(uuid())
+  markers           Json
+  ageGroup          String?
+  summary           String
+  kAnonymityGroup   String?
+  createdAt         DateTime @default(now())
+  sourceExtractedAt DateTime
+  expiresAt         DateTime
+}
+
+model TrainingFeedback {
+  id               String   @id @default(uuid())
+  questionCategory String
+  qualityScore     Float
+  feedbackType     String
+  language         String
+  createdAt        DateTime @default(now())
+  expiresAt        DateTime
+}
+
+// --------------- GDPR: Tier 3 - Aggregated Analytics ---------------
+
+model AnalyticsAggregate {
+  id          String   @id @default(uuid())
+  period      String
+  metricType  String
+  metricValue Json
+  cellSize    Int
+  computedAt  DateTime @default(now())
+}
+
+// --------------- GDPR: Audit Log ---------------
+
+model AuditLog {
+  id            String   @id @default(uuid())
+  action        String
+  tier          String
+  actorType     String
+  actorId       String?
+  targetId      String?
+  details       Json     @default("{}")
+  integrityHash String
+  createdAt     DateTime @default(now())
+}

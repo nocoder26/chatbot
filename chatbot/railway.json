@@ -1,0 +1,9 @@
+{
+  "$schema": "https://railway.app/railway.schema.json",
+  "build": {
+    "rootDirectory": "backend-node"
+  },
+  "deploy": {
+    "startCommand": "prisma db push --skip-generate && node src/index.js"
+  }
+}
