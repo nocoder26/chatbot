@@ -755,6 +755,64 @@ export async function clearAdminTestData(
   return response.json();
 }
 
+// --- Valkey Real-time Stats (Phase 10) ---
+
+export interface ValkeyStats {
+  available: boolean;
+  message?: string;
+  gaps?: {
+    total: number;
+    by_source: Record<string, number>;
+    avg_score: number;
+    recent_queries: { query: string; score: number; source: string; timestamp: string }[];
+  };
+  sessions?: {
+    active_count: number;
+  };
+  feedback?: {
+    total: number;
+    avg_rating: string;
+    sentiment: { positive: number; neutral: number; negative: number };
+  };
+  telemetry?: {
+    device_breakdown: {
+      browsers: Record<string, number>;
+      os: Record<string, number>;
+      screens: Record<string, number>;
+    };
+  };
+  training_data?: {
+    files: { file: string; records: number; size_mb: string }[];
+    total_records: number;
+    total_size_mb: string;
+  };
+}
+
+export async function fetchValkeyStats(adminKey: string): Promise<ValkeyStats> {
+  const response = await fetch(resolveApiUrl("/api/admin/valkey-stats"), {
+    headers: { "X-Admin-Key": adminKey },
+  });
+  if (!response.ok) throw new Error("Failed to fetch Valkey stats");
+  return response.json();
+}
+
+export interface RealtimeGap {
+  query: string;
+  source: string;
+  highest_score: number;
+  treatment?: string;
+  timestamp: string;
+  chat_history_length: number;
+}
+
+export async function fetchRealtimeGaps(adminKey: string): Promise<{ total: number; gaps: RealtimeGap[] }> {
+  const response = await fetch(resolveApiUrl("/api/admin/gaps-realtime"), {
+    headers: { "X-Admin-Key": adminKey },
+  });
+  if (!response.ok) throw new Error("Failed to fetch realtime gaps");
+  return response.json();
+}
+
 // --- Push Notifications (PWA) ---
 
 export async function fetchVapidKey(): Promise<{ publicKey: string }> {

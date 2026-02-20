@@ -27,6 +27,8 @@ import {
   fetchAdminUsers,
   fetchPendingImprovements,
   fetchQueryDocuments,
+  fetchValkeyStats,
+  fetchRealtimeGaps,
   approveGap,
   dismissGap,
   clearAdminTestData,
@@ -38,6 +40,8 @@ import {
   type AdminUser,
   type PendingImprovement,
   type QueryDocumentItem,
+  type ValkeyStats,
+  type RealtimeGap,
 } from "@/lib/api";
 
 // --- BAR CHART ---
@@ -138,7 +142,7 @@ function formatDuration(ms: number): string {
 }
 
 function Dashboard({ adminKey }: { adminKey: string }) {
-  const [activeTab, setActiveTab] = useState<"gaps" | "feedback" | "documents" | "analytics" | "users" | "queryTracking">("gaps");
+  const [activeTab, setActiveTab] = useState<"gaps" | "realtime" | "feedback" | "documents" | "analytics" | "users" | "queryTracking">("gaps");
   const [stats, setStats] = useState<AdminStats>({ gaps: [], gapsChat: [], gapsBloodwork: [], feedback: [], doc_usage: [], kb_sources: [], insufficient_kb: [], sources_ranking: [] });
   const [analytics, setAnalytics] = useState<UserAnalytics | null>(null);
   const [userList, setUserList] = useState<AdminUser[]>([]);
@@ -155,24 +159,32 @@ function Dashboard({ adminKey }: { adminKey: string }) {
   const [clearResult, setClearResult] = useState<string | null>(null);
   // PHASE 6: Query document tracking state
   const [queryDocuments, setQueryDocuments] = useState<QueryDocumentItem[]>([]);
+  // Phase 10: Valkey real-time stats
+  const [valkeyStats, setValkeyStats] = useState<ValkeyStats | null>(null);
+  const [realtimeGaps, setRealtimeGaps] = useState<RealtimeGap[]>([]);
 
   const loadData = async () => {
     setLoading(true);
     setError("");
     try {
       // PHASE 6: Added fetchQueryDocuments to parallel fetch
-      const [statsData, analyticsData, usersData, improvementsData, queryDocsData] = await Promise.all([
+      // Phase 10: Added fetchValkeyStats and fetchRealtimeGaps
+      const [statsData, analyticsData, usersData, improvementsData, queryDocsData, valkeyData, gapsData] = await Promise.all([
         fetchAdminStats(adminKey),
         fetchUserAnalytics(adminKey),
         fetchAdminUsers(adminKey),
         fetchPendingImprovements(adminKey).catch(() => ({ total: 0, items: [] })),
         fetchQueryDocuments(adminKey).catch(() => ({ total: 0, items: [] })),
+        fetchValkeyStats(adminKey).catch(() => ({ available: false })),
+        fetchRealtimeGaps(adminKey).catch(() => ({ total: 0, gaps: [] })),
       ]);
       setStats(statsData);
       setAnalytics(analyticsData);
       setUserList(usersData.users || []);
       setPendingImprovements(improvementsData.items || []);
       setQueryDocuments(queryDocsData.items || []);
+      setValkeyStats(valkeyData);
+      setRealtimeGaps(gapsData.gaps || []);
       setLastUpdated(new Date());
     } catch (err) {
       if (err instanceof Error && err.message.includes("Unauthorized")) {
@@ -272,6 +284,7 @@ function Dashboard({ adminKey }: { adminKey: string }) {
 
   const tabs = [
     { id: "gaps" as const, label: "Knowledge Gaps", color: "text-red-500 border-red-500 bg-red-50 dark:bg-red-900/10" },
+    { id: "realtime" as const, label: "Realtime (Valkey)", color: "text-blue-600 border-blue-600 bg-blue-50 dark:bg-blue-900/10" },
     { id: "documents" as const, label: "Document Usage & KB Sources", color: "text-izana-indigo border-izana-indigo bg-izana-indigo/5" },
     { id: "queryTracking" as const, label: "Query Tracking", color: "text-emerald-600 border-emerald-600 bg-emerald-50 dark:bg-emerald-900/10" },
     { id: "feedback" as const, label: "User Feedback", color: "text-izana-teal border-izana-teal bg-izana-teal/10" },
@@ -530,6 +543,144 @@ function Dashboard({ adminKey }: { adminKey: string }) {
                 </div>
               )}
               </>
+            )}
+
+            {/* PHASE 10: REALTIME VALKEY STATS */}
+            {activeTab === "realtime" && (
+              <div className="p-4 space-y-6">
+                {!valkeyStats?.available ? (
+                  <div className="p-8 text-center text-gray-400">
+                    <AlertTriangle className="w-8 h-8 mx-auto mb-2" />
+                    Valkey not connected. Real-time stats unavailable.
+                  </div>
+                ) : (
+                  <>
+                    {/* Key Metrics */}
+                    <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
+                      <div className="p-4 bg-blue-50 dark:bg-blue-900/10 rounded-xl text-center">
+                        <p className="text-2xl font-bold text-blue-600">{valkeyStats.sessions?.active_count ?? 0}</p>
+                        <p className="text-xs text-gray-500 mt-1">Active Sessions</p>
+                      </div>
+                      <div className="p-4 bg-red-50 dark:bg-red-900/10 rounded-xl text-center">
+                        <p className="text-2xl font-bold text-red-600">{valkeyStats.gaps?.total ?? 0}</p>
+                        <p className="text-xs text-gray-500 mt-1">Realtime Gaps</p>
+                      </div>
+                      <div className="p-4 bg-yellow-50 dark:bg-yellow-900/10 rounded-xl text-center">
+                        <p className="text-2xl font-bold text-yellow-600">{valkeyStats.feedback?.avg_rating ?? "—"}</p>
+                        <p className="text-xs text-gray-500 mt-1">Avg Rating (24h)</p>
+                      </div>
+                      <div className="p-4 bg-green-50 dark:bg-green-900/10 rounded-xl text-center">
+                        <p className="text-2xl font-bold text-green-600">{valkeyStats.training_data?.total_records ?? 0}</p>
+                        <p className="text-xs text-gray-500 mt-1">Training Records</p>
+                      </div>
+                    </div>
+
+                    {/* Sentiment Breakdown */}
+                    {valkeyStats.feedback?.sentiment && (
+                      <section>
+                        <h4 className="text-sm font-bold text-gray-500 uppercase tracking-wider mb-3">Realtime Sentiment</h4>
+                        <div className="flex gap-4">
+                          <div className="flex items-center gap-2 px-3 py-2 bg-green-50 dark:bg-green-900/10 rounded-xl">
+                            <span className="text-green-600 font-bold">{valkeyStats.feedback.sentiment.positive}</span>
+                            <span className="text-xs text-gray-500">Positive</span>
+                          </div>
+                          <div className="flex items-center gap-2 px-3 py-2 bg-yellow-50 dark:bg-yellow-900/10 rounded-xl">
+                            <span className="text-yellow-600 font-bold">{valkeyStats.feedback.sentiment.neutral}</span>
+                            <span className="text-xs text-gray-500">Neutral</span>
+                          </div>
+                          <div className="flex items-center gap-2 px-3 py-2 bg-red-50 dark:bg-red-900/10 rounded-xl">
+                            <span className="text-red-600 font-bold">{valkeyStats.feedback.sentiment.negative}</span>
+                            <span className="text-xs text-gray-500">Negative</span>
+                          </div>
+                        </div>
+                      </section>
+                    )}
+
+                    {/* Gap Source Breakdown */}
+                    {valkeyStats.gaps?.by_source && Object.keys(valkeyStats.gaps.by_source).length > 0 && (
+                      <section>
+                        <h4 className="text-sm font-bold text-gray-500 uppercase tracking-wider mb-3">Gaps by Source</h4>
+                        <div className="flex gap-3">
+                          {Object.entries(valkeyStats.gaps.by_source).map(([source, count]) => (
+                            <div key={source} className="px-3 py-2 bg-gray-100 dark:bg-[#333] rounded-lg">
+                              <span className="font-bold text-izana-primary">{count}</span>
+                              <span className="text-xs text-gray-500 ml-1">{source}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </section>
+                    )}
+
+                    {/* Realtime Gaps Table */}
+                    <section>
+                      <h4 className="text-sm font-bold text-gray-500 uppercase tracking-wider mb-3">Recent Gaps (Valkey)</h4>
+                      <table className="w-full">
+                        <thead className="bg-gray-50 dark:bg-[#333]">
+                          <tr>
+                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Time</th>
+                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Source</th>
+                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Query</th>
+                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase w-24">Score</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-200 dark:divide-[#404040]">
+                          {realtimeGaps.slice(0, 20).map((gap, i) => (
+                            <tr key={i} className="hover:bg-gray-50 dark:hover:bg-[#333]">
+                              <td className="px-4 py-3 whitespace-nowrap text-xs text-gray-500">
+                                {new Date(gap.timestamp).toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" })}
+                              </td>
+                              <td className="px-4 py-3 whitespace-nowrap">
+                                <span className={`px-2 py-1 rounded-full text-xs font-medium ${
+                                  gap.source === "chat" ? "bg-blue-100 text-blue-700" : "bg-orange-100 text-orange-700"
+                                }`}>
+                                  {gap.source}
+                                </span>
+                              </td>
+                              <td className="px-4 py-3 text-sm text-izana-dark dark:text-izana-light max-w-md truncate" title={gap.query}>
+                                {gap.query}
+                              </td>
+                              <td className="px-4 py-3 whitespace-nowrap text-sm font-bold text-red-500">
+                                {((gap.highest_score || 0) * 100).toFixed(0)}%
+                              </td>
+                            </tr>
+                          ))}
+                          {realtimeGaps.length === 0 && (
+                            <tr><td colSpan={4} className="p-8 text-center text-gray-400">No realtime gaps in Valkey.</td></tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </section>
+
+                    {/* Training Data Stats */}
+                    {valkeyStats.training_data && valkeyStats.training_data.files.length > 0 && (
+                      <section>
+                        <h4 className="text-sm font-bold text-gray-500 uppercase tracking-wider mb-3">Training Data Files</h4>
+                        <table className="w-full">
+                          <thead className="bg-gray-50 dark:bg-[#333]">
+                            <tr>
+                              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">File</th>
+                              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase w-24">Records</th>
+                              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase w-24">Size</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-gray-200 dark:divide-[#404040]">
+                            {valkeyStats.training_data.files.map((file, i) => (
+                              <tr key={i} className="hover:bg-gray-50 dark:hover:bg-[#333]">
+                                <td className="px-4 py-3 text-sm font-mono">{file.file}</td>
+                                <td className="px-4 py-3 text-sm font-bold">{file.records}</td>
+                                <td className="px-4 py-3 text-sm text-gray-500">{file.size_mb} MB</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                        <p className="text-xs text-gray-500 mt-2">
+                          Total: {valkeyStats.training_data.total_records} records, {valkeyStats.training_data.total_size_mb} MB
+                        </p>
+                      </section>
+                    )}
+                  </>
+                )}
+              </div>
             )}
 
             {/* DOCUMENT USAGE & KB SOURCES */}

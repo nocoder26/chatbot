@@ -4,6 +4,9 @@ import prisma from '../lib/prisma.js';
 /**
  * Tier 1: 24-hour privacy deletion. Runs every hour at :15 (after Tier 2 extraction at :00).
  * Tier 2: 18-month expiry cleanup runs in the same job.
+ *
+ * Note: Valkey-based data (sessions, gaps, feedback) is automatically deleted via TTL (24h).
+ * This cron only handles Prisma-based data that doesn't have TTL support.
  */
 export function startPrivacyDeletionCron() {
   cron.schedule('15 * * * *', async () => {

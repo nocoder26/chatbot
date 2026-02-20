@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import prisma from '../lib/prisma.js';
-import { streamLLMResponse, getLLMResponse } from '../lib/llm.js';
+import { streamLLMResponse, getLLMResponse, formatCitation } from '../lib/llm.js';
 import { verifyJWT } from '../middleware/auth.js';
 import { vectorizeAndStore, queryConversationMemory } from '../lib/pinecone.js';
 import { hashUserId } from '../gdpr/sanitizer.js';
@@ -10,6 +10,9 @@ import { encryptField, decryptField, isEncryptionEnabled } from '../gdpr/encrypt
 import { requireConsent } from '../gdpr/consentCheck.js';
 import { getPromptAdjustments } from '../lib/promptRouter.js';
 import { classifyReproductiveHealthQuery, getOffTopicMessage, getOffTopicSuggestedQuestions } from '../lib/topicFilter.js';
+import * as sessionManager from '../lib/sessionManager.js';
+import { logGap } from '../lib/gapLogger.js';
+import { queryCachedAnswer, upsertCachedAnswer, isCacheAvailable } from '../lib/semanticCachePinecone.js';
 
 const router = Router();
 const TOPIC_FILTER_THRESHOLD = parseFloat(process.env.TOPIC_FILTER_CONFIDENCE_THRESHOLD || '0.5', 10) || 0.5;
@@ -21,11 +24,18 @@ const LANG_NAMES = {
 
 function buildSystemPrompt(langCode) {
   const langName = LANG_NAMES[langCode] || 'English';
-  return `Izana health assistant for fertility. Caring, evidence-based, clear. Respect privacy.
+  return `You are Izana, a compassionate and knowledgeable health assistant specializing in fertility and reproductive health.
+You provide evidence-based, caring responses while respecting user privacy.
 
-Respond entirely in ${langName}. All text and follow-ups in ${langName}.
+Guidelines:
+- Use flowing clinical prose (avoid bullet points unless specifically requested)
+- IMPORTANT: Never use the word "cancer" - instead use "cell abnormalities", "abnormal cell growth", or similar phrases
+- Be empathetic and supportive while remaining medically accurate
+- Cite knowledge base sources when available
 
-At the end, give exactly 3 short, deep contextual follow-up questions the user might ask next (same language). Format:
+Respond entirely in ${langName}. All text and follow-ups must be in ${langName}.
+
+At the end of your response, provide exactly 3 contextual follow-up questions the user might want to ask. Format:
 [Q1] First question
 [Q2] Second question
 [Q3] Third question`;
@@ -88,12 +98,51 @@ router.get('/:chatId/messages', verifyJWT, async (req, res) => {
  */
 router.post('/', verifyJWT, requireConsent, async (req, res) => {
   try {
-    const { message, chatId, title, stream = true, language = 'en', clinical_data, treatment } = req.body;
+    const { message, chatId, title, stream = true, language = 'en', clinical_data, treatment, session_id } = req.body;
     if (!message || typeof message !== 'string') {
       return res.status(400).json({ error: 'Message is required' });
     }
 
     const userId = req.userId;
+
+    // Phase 2: Session tracking - get or create session
+    const session = await sessionManager.getOrCreateSession(session_id, userId);
+    const activeSessionId = session?.session_id;
+
+    // Phase 4: Check Pinecone semantic cache for exact/near-exact match
+    if (isCacheAvailable()) {
+      try {
+        const cacheResult = await queryCachedAnswer(message.trim(), language);
+        if (cacheResult.hit && cacheResult.answer) {
+          // Return cached answer directly
+          const { cleanedText, questions } = parseFollowUpQuestions(cacheResult.answer);
+          if (stream) {
+            res.setHeader('Content-Type', 'text/event-stream');
+            res.setHeader('Cache-Control', 'no-cache');
+            res.setHeader('Connection', 'keep-alive');
+            res.flushHeaders();
+            res.write(`data: ${JSON.stringify({ content: cleanedText, cached: true })}\n\n`);
+            if (questions.length > 0) {
+              res.write(`data: ${JSON.stringify({ suggested_questions: questions })}\n\n`);
+            }
+            res.write(`data: ${JSON.stringify({ session_id: activeSessionId })}\n\n`);
+            res.write('data: [DONE]\n\n');
+            res.end();
+          } else {
+            res.json({
+              response: cleanedText,
+              suggested_questions: questions,
+              citations: [],
+              cached: true,
+              session_id: activeSessionId,
+            });
+          }
+          return;
+        }
+      } catch (cacheErr) {
+        console.warn('[Chat] Semantic cache check failed:', cacheErr.message);
+      }
+    }
 
     // Build effective user message for LLM: include attached lab results and treatment when provided
     let effectiveMessage = message.trim();
@@ -215,14 +264,24 @@ router.post('/', verifyJWT, requireConsent, async (req, res) => {
     // PHASE 3: Track whether KB context was available (for kbGap flag in response)
     const hasKBContext = kb_final_context.length > 0;
 
-    // PHASE 3: Log knowledge gap for admin dashboard when KB has no context (GDPR: no PII, hashed userId)
-    if (!hasKBContext) {
+    // Phase 7: Log knowledge gap to Valkey (fire-and-forget) when KB has no context
+    if (!hasKBContext || retrievalResult.all_below_threshold) {
+      // Get session history for gap logging
+      const sessionHistory = session?.chat_history || [];
+      logGap({
+        query: message.trim(),
+        chat_history: sessionHistory.map((h) => ({ role: h.role, content: h.content?.slice(0, 200) })),
+        highest_score: kb_dense_candidates[0]?.score || 0,
+        source: 'chat',
+      });
+
+      // Also log to Prisma for admin dashboard (GDPR: no PII, truncated)
       prisma.userActivity.create({
         data: {
           userId,
           type: 'knowledge_gap',
           metadata: {
-            question: message.trim().slice(0, 200), // Truncated for privacy
+            question: message.trim().slice(0, 200),
             source: 'chat_no_kb_match',
             language,
             timestamp: new Date().toISOString(),
@@ -292,8 +351,19 @@ router.post('/', verifyJWT, requireConsent, async (req, res) => {
       res.write(`data: ${JSON.stringify({ kbReferences, kbGap: !hasKBContext })}\n\n`);
       if (typeof res.flush === 'function') res.flush();
 
+      // Phase 2: Send session ID
+      res.write(`data: ${JSON.stringify({ session_id: activeSessionId })}\n\n`);
+      if (typeof res.flush === 'function') res.flush();
+
       res.write('data: [DONE]\n\n');
       res.end();
+
+      // Phase 2: Update session history with user message and AI response
+      if (activeSessionId) {
+        sessionManager.updateHistory(activeSessionId, 'user', message.trim()).catch(() => {});
+        sessionManager.updateHistory(activeSessionId, 'ai', cleanedText).catch(() => {});
+        sessionManager.cacheContext(activeSessionId, kb_final_context, kb_final_context[0]?.fused_score || 0).catch(() => {});
+      }
 
       const aiEnc = isEncryptionEnabled() ? encryptField(cleanedText) : null;
       const aiMsg = await prisma.message.create({
@@ -357,7 +427,14 @@ router.post('/', verifyJWT, requireConsent, async (req, res) => {
         };
         prisma.userActivity.create({ data: { userId, type: 'retrieval_event', metadata: retrievalMeta2 } }).catch((e) => console.error('Retrieval event log error:', e));
 
-        return { cleanedText, questions, ragCitations, sufficiency, kbReferences, kbGap: !hasKBContext };
+        // Phase 2: Update session history
+        if (activeSessionId) {
+          sessionManager.updateHistory(activeSessionId, 'user', message.trim()).catch(() => {});
+          sessionManager.updateHistory(activeSessionId, 'ai', cleanedText).catch(() => {});
+          sessionManager.cacheContext(activeSessionId, kb_final_context, kb_final_context[0]?.fused_score || 0).catch(() => {});
+        }
+
+        return { cleanedText, questions, ragCitations, sufficiency, kbReferences, kbGap: !hasKBContext, sessionId: activeSessionId };
       })();
 
       try {
@@ -371,6 +448,7 @@ router.post('/', verifyJWT, requireConsent, async (req, res) => {
             kbReferences: result.kbReferences,
             kbGap: result.kbGap,
             matchScore: result.sufficiency?.score,
+            session_id: result.sessionId,
           });
         }
       } catch (raceErr) {

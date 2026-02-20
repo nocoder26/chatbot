@@ -4,6 +4,9 @@ import { logAuditEvent } from '../gdpr/auditLogger.js';
 import { identifyKnowledgeGaps } from '../gdpr/modelImprovement.js';
 import { getCachedKnowledgeGaps } from '../cron/modelImprovement.js';
 import { upsertAnonymizedVector } from '../lib/pinecone.js';
+import * as valkey from '../lib/valkey.js';
+import { getGaps, getGapStats } from '../lib/gapLogger.js';
+import { getTrainingStats } from '../lib/trainingDataWriter.js';
 
 const router = Router();
 const ADMIN_KEY = process.env.ADMIN_PIN || '2603';
@@ -492,6 +495,103 @@ router.post('/approve-gap', verifyAdmin, async (req, res) => {
   } catch (err) {
     console.error('Admin approve-gap error:', err);
     return res.status(500).json({ error: 'Failed to process gap' });
+  }
+});
+
+/**
+ * GET /api/admin/valkey-stats
+ * Phase 10: Valkey-based real-time stats
+ */
+router.get('/valkey-stats', verifyAdmin, async (req, res) => {
+  try {
+    logAuditEvent({ action: 'admin_access', tier: 'tier1', actorType: 'admin', details: { endpoint: '/valkey-stats' } });
+
+    if (!valkey.isAvailable()) {
+      return res.json({ available: false, message: 'Valkey not connected' });
+    }
+
+    // Get gap stats from Valkey
+    const gapStats = await getGapStats();
+
+    // Get session count
+    const sessionKeys = await valkey.scanKeys('session:*', 100);
+
+    // Get feedback stats
+    const feedbackKeys = await valkey.scanKeys('feedback:*', 100);
+    const feedbackData = await valkey.mget(feedbackKeys);
+    const validFeedback = feedbackData.filter(Boolean);
+
+    const sentimentBreakdown = {
+      positive: validFeedback.filter((f) => f.rating >= 4).length,
+      neutral: validFeedback.filter((f) => f.rating === 3).length,
+      negative: validFeedback.filter((f) => f.rating <= 2).length,
+    };
+
+    const avgRating = validFeedback.length > 0
+      ? validFeedback.reduce((sum, f) => sum + (f.rating || 0), 0) / validFeedback.length
+      : 0;
+
+    // Get telemetry stats
+    const telemetryKeys = await valkey.scanKeys('telemetry:*', 100);
+    const telemetryData = await valkey.mget(telemetryKeys);
+
+    const deviceBreakdown = { browsers: {}, os: {}, screens: {} };
+    telemetryData.filter(Boolean).forEach((t) => {
+      if (t.browser) deviceBreakdown.browsers[t.browser] = (deviceBreakdown.browsers[t.browser] || 0) + 1;
+      if (t.os) deviceBreakdown.os[t.os] = (deviceBreakdown.os[t.os] || 0) + 1;
+      if (t.screen) deviceBreakdown.screens[t.screen] = (deviceBreakdown.screens[t.screen] || 0) + 1;
+    });
+
+    // Get training data stats
+    const trainingStats = await getTrainingStats();
+
+    res.json({
+      available: true,
+      gaps: gapStats,
+      sessions: {
+        active_count: sessionKeys.length,
+      },
+      feedback: {
+        total: validFeedback.length,
+        avg_rating: avgRating.toFixed(2),
+        sentiment: sentimentBreakdown,
+      },
+      telemetry: {
+        device_breakdown: deviceBreakdown,
+      },
+      training_data: trainingStats,
+    });
+  } catch (err) {
+    console.error('Admin valkey-stats error:', err);
+    return res.status(500).json({ error: 'Failed to fetch Valkey stats' });
+  }
+});
+
+/**
+ * GET /api/admin/gaps-realtime
+ * Phase 10: Real-time gap data from Valkey
+ */
+router.get('/gaps-realtime', verifyAdmin, async (req, res) => {
+  try {
+    logAuditEvent({ action: 'admin_access', tier: 'tier1', actorType: 'admin', details: { endpoint: '/gaps-realtime' } });
+
+    const gaps = await getGaps(100);
+    const formatted = gaps.map((g) => ({
+      query: g.query,
+      source: g.source,
+      highest_score: g.highest_score,
+      treatment: g.treatment,
+      timestamp: g.timestamp,
+      chat_history_length: g.chat_history?.length || 0,
+    }));
+
+    res.json({
+      total: formatted.length,
+      gaps: formatted,
+    });
+  } catch (err) {
+    console.error('Admin gaps-realtime error:', err);
+    return res.status(500).json({ error: 'Failed to fetch real-time gaps' });
   }
 });
 

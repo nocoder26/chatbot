@@ -19,6 +19,11 @@ import { startTier3AggregationCron } from './cron/tier3Aggregation.js';
 import { startModelImprovementCron } from './cron/modelImprovement.js';
 import { generatePositiveUsernames } from './lib/usernames.js';
 import prisma from './lib/prisma.js';
+import { initValkey, disconnect as disconnectValkey } from './lib/valkey.js';
+import * as valkey from './lib/valkey.js';
+import { getSession } from './lib/sessionManager.js';
+import { upsertCachedAnswer, isCacheAvailable } from './lib/semanticCachePinecone.js';
+import { appendTrainingRecord, qualifiesForTraining } from './lib/trainingDataWriter.js';
 
 const AVATAR_URLS = [
   'https://api.dicebear.com/9.x/avataaars/svg?seed=1',
@@ -115,6 +120,8 @@ app.use('/api/consent', consentRoutes);
 app.use('/api/gdpr', userRightsRoutes);
 app.use('/api/chat', chatRoutes);
 app.use('/api/analyze-bloodwork', bloodworkRoutes);
+// Phase 6: New bloodwork endpoints
+app.use('/api/upload-bloodwork', bloodworkRoutes);
 app.use('/api/profile', profileRoutes);
 app.use('/api/user-profile', profileRoutes);
 app.use('/api/admin', adminRoutes);
@@ -122,30 +129,101 @@ app.use('/api/push', pushRoutes);
 
 /**
  * POST /feedback  &  POST /api/feedback
+ * Enhanced with Valkey logging, semantic cache upsert, and training data collection.
  */
 app.post(['/feedback', '/api/feedback'], async (req, res) => {
-  const { question, answer, rating, reason, type, sessionDuration, messageCount } = req.body || {};
-  console.log(`[Feedback] type=${type || 'rating'} rating=${rating} reason="${reason || ''}" q="${(question || '').slice(0, 80)}"`);
+  const {
+    query,
+    question, // Legacy field name
+    answer,
+    rating,
+    feedback,
+    reason, // Legacy field name
+    follow_up_clicked,
+    session_id,
+    type,
+    sessionDuration,
+    messageCount,
+  } = req.body || {};
+
+  const effectiveQuery = query || question || '';
+  const effectiveFeedback = feedback || reason || '';
+
+  console.log(`[Feedback] type=${type || 'rating'} rating=${rating} follow_up=${follow_up_clicked || false} q="${effectiveQuery.slice(0, 80)}"`);
 
   // Extract userId from JWT if present (best-effort)
+  let userId = null;
   try {
     const authHeader = req.headers.authorization;
     if (authHeader?.startsWith('Bearer ')) {
       const jwt = await import('jsonwebtoken');
       const decoded = jwt.default.verify(authHeader.slice(7), process.env.JWT_SECRET);
-      const userId = decoded.userId || decoded.id;
-      if (userId) {
-        const { default: prismaClient } = await import('./lib/prisma.js');
-        prismaClient.userActivity.create({
-          data: {
-            userId,
-            type: type === 'session_end' ? 'session_end' : 'feedback',
-            metadata: { question: (question || '').slice(0, 200), rating, reason, sessionDuration, messageCount },
-          },
-        }).catch((e) => console.error('Feedback activity log error:', e));
-      }
+      userId = decoded.userId || decoded.id;
     }
   } catch (_) { /* best-effort */ }
+
+  // Phase 9: Async log to Valkey (24h TTL)
+  if (valkey.isAvailable() && session_id) {
+    const feedbackKey = valkey.feedbackKey(session_id, Date.now());
+    valkey.setKey(feedbackKey, {
+      query: effectiveQuery.slice(0, 500),
+      answer: (answer || '').slice(0, 2000),
+      rating,
+      feedback: effectiveFeedback.slice(0, 500),
+      follow_up_clicked: follow_up_clicked || false,
+      timestamp: new Date().toISOString(),
+    }).catch((e) => console.error('[Feedback] Valkey log error:', e.message));
+  }
+
+  // Phase 9: If rating === 5, upsert to Pinecone Semantic Cache
+  if (rating === 5 && effectiveQuery && answer && isCacheAvailable()) {
+    upsertCachedAnswer(effectiveQuery, answer, req.body?.language || 'en', {
+      source: 'user_feedback',
+      rating: 5,
+    }).catch((e) => console.error('[Feedback] Semantic cache upsert error:', e.message));
+  }
+
+  // Phase 9: Collect training data for qualifying feedback
+  if (qualifiesForTraining(rating, follow_up_clicked)) {
+    // Fetch session context from Valkey (if available)
+    let sessionContext = null;
+    if (session_id) {
+      try {
+        sessionContext = await getSession(session_id);
+      } catch (_) { /* best-effort */ }
+    }
+
+    appendTrainingRecord({
+      query: effectiveQuery,
+      answer,
+      rating,
+      feedback: effectiveFeedback,
+      follow_up_clicked,
+      chat_history: sessionContext?.chat_history || [],
+      bloodwork_data: null, // Could be fetched from session if needed
+      treatment_type: null,
+      source: 'user_feedback',
+    }).catch((e) => console.error('[Feedback] Training data write error:', e.message));
+  }
+
+  // Log to Prisma for admin dashboard
+  if (userId) {
+    prisma.userActivity.create({
+      data: {
+        userId,
+        type: type === 'session_end' ? 'session_end' : 'feedback',
+        metadata: {
+          question: effectiveQuery.slice(0, 200),
+          rating,
+          reason: effectiveFeedback.slice(0, 200),
+          follow_up_clicked,
+          session_id,
+          sessionDuration,
+          messageCount,
+        },
+      },
+    }).catch((e) => console.error('Feedback activity log error:', e));
+  }
 
   res.json({ success: true });
 });
@@ -167,6 +245,11 @@ startPrivacyDeletionCron();
 startTier3AggregationCron();
 startModelImprovementCron();
 
+// Phase 1: Initialize Valkey on startup
+initValkey().catch((err) => {
+  console.warn('[Startup] Valkey initialization failed (non-blocking):', err.message);
+});
+
 const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server running on 0.0.0.0:${PORT}`);
 });
@@ -175,6 +258,7 @@ function shutdown(signal) {
   console.log(`[${signal}] Shutting down gracefully...`);
   server.close(async () => {
     try { await prisma.$disconnect(); } catch (_) {}
+    try { await disconnectValkey(); } catch (_) {}
     process.exit(0);
   });
   setTimeout(() => process.exit(1), 10000);

@@ -9,6 +9,9 @@ const CHAT_TIMEOUT_MS = parseInt(process.env.LLM_CHAT_TIMEOUT_MS || '30000', 10)
 
 const PROVIDER = (process.env.LLM_PROVIDER || 'groq').toLowerCase();
 const MODEL = process.env.LLM_MODEL || 'llama-3.3-70b-versatile';
+// Phase 8: Model routing - use versatile model for complex tasks
+const VERSATILE_MODEL = 'llama-3.3-70b-versatile';
+const FAST_MODEL = 'llama-3.1-8b-instant';
 
 const BASE_URLS = {
   groq: 'https://api.groq.com/openai/v1',
@@ -209,3 +212,42 @@ export async function getLLMResponse(systemPrompt, userMessage, opts = {}) {
     clearTimeout(timer);
   }
 }
+
+/**
+ * Format a raw citation (document filename) into a human-readable format.
+ * "protocol_ivf_2024_compress.pdf" → "Protocol Ivf 2024"
+ * @param {string} rawCitation
+ * @returns {string}
+ */
+export function formatCitation(rawCitation) {
+  if (!rawCitation || typeof rawCitation !== 'string') return '';
+  return rawCitation
+    .replace(/_compress\.pdf$/i, '')
+    .replace(/\.pdf$/i, '')
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (c) => c.toUpperCase())
+    .trim();
+}
+
+/**
+ * Get LLM response with structured JSON output.
+ * Uses JSON mode for reliable structured responses.
+ * @param {string} systemPrompt
+ * @param {string} userMessage
+ * @param {object} schema - Expected JSON schema (for documentation)
+ * @param {object} opts
+ */
+export async function getStructuredResponse(systemPrompt, userMessage, schema = {}, opts = {}) {
+  const enhancedPrompt = `${systemPrompt}
+
+You MUST respond with valid JSON only. No markdown, no code fences, no explanation outside the JSON.
+Expected schema: ${JSON.stringify(schema)}`;
+
+  return getLLMResponse(enhancedPrompt, userMessage, {
+    ...opts,
+    responseFormat: 'json',
+    temperature: opts.temperature ?? 0.2,
+  });
+}
+
+export { VERSATILE_MODEL, FAST_MODEL };
