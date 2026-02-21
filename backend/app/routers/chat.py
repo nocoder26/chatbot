@@ -118,10 +118,10 @@ def save_log(filepath: str, entry: dict) -> None:
                 if content:
                     logs = json.loads(content)
         logs.append(entry)
-        if len(logs) > 500:
-            logs = logs[-500:]
+        if len(log, len(log)) > 500:
+            log = log[-500:]
         with open(filepath, "w") as f:
-            json.dump(logs, f, indent=2)
+            json.dump(log, f, indent=2)
     except (json.JSONDecodeError, OSError) as e:
         logger.error(f"Failed to write log to {filepath}: {e}")
 
@@ -246,81 +246,24 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest, background_
         language_name = SUPPORTED_LANGUAGES.get(chat_request.language, "English")
         user_message = sanitize_input(chat_request.message)
 
-        # Add null safety for triageResult
-        triageResult = await triageQuery(user_message, language_name)
-        if (!triageResult) {
-          triageResult = {
-            isValidFertilityQuery: true,
-            searchQueries: [user_message],
-            reasoning: "Safety fallback"
-          };
-        }
-
-        // Update system prompt to be more explicit about blood work follow-ups
-        const system_prompt = `You are Izana AI, a medical information assistant specialized in reproductive health and fertility treatment for couples...
-
-        // ... rest of the system prompt remains the same ...
-
-        // IMPORTANT: If the user is asking a follow-up question about their previously uploaded lab results (e.g., asking about FSH, Estradiol, or specific values), you MUST set isValidFertilityQuery: true. Only set it to false if the query is completely unrelated to fertility or medical health.`;
-
-        # 1. BUILD SEARCH QUERY
-        if (triageResult.isValidFertilityQuery) {
-            if is_blood_work:
-                lab_results = chat_request.clinical_data.get("results", [])
-            lab_summary = ", ".join([
-                f"{r.get('name')}: {r.get('value')} {r.get('unit')}"
-                for r in lab_results
-            ])
-            treatment_context = f"undergoing {chat_request.treatment}" if chat_request.treatment else "seeking fertility treatment"
-            search_query = f"Explain these fertility lab results for couples {treatment_context}: {lab_summary}. Help them understand what each value means for their fertility journey and reproductive health."
-
-            check_prompt = (
-                f"Check labs: {lab_summary}. "
-                "Identify any missing from: FSH, AMH, LH, Estradiol, TSH, Prolactin. "
-                "Return the missing names as a comma-separated list, or 'COMPLETE' if all present."
-            )
-            try:
-                check_comp = await retry_api_call(
-                    lambda: groq_client.chat.completions.create(
-                        messages=[{"role": "user", "content": check_prompt}],
-                        model=QC_MODEL,
-                        temperature=0.1,
-                        max_tokens=100
-                    ),
-                    max_retries=2
-                )
-                missing = check_comp.choices[0].message.content.strip()
-                if "COMPLETE" not in missing.upper():
-                    missing_params_text = (
-                        f"\n\nNote: Gently inform the user that {missing} are missing "
-                        "but are important for a comprehensive evaluation."
-                    )
-            except Exception as e:
-                logger.warning(f"Missing marker check failed: {e}")
-        else:
-            search_query = user_message
-
-        # 2. SEMANTIC SEARCH + RERANKING
-// Add null safety for triageResult
+// Step 1: Implement strict defensive guardrails against null objects
 var triageResult = await triageQuery(user_message, language_name);
-if (!triageResult) {
+if (!triageResult || typeof triageResult !== 'object' || !triageResult.hasOwnProperty('searchQueries')) {
   triageResult = {
     isValidFertilityQuery: true,
     searchQueries: [user_message],
-    reasoning: "Safety fallback"
+    reasoning: "Safety fallback triggered"
   };
 }
 
-// Update system prompt to be more explicit about blood work follow-ups
-const system_prompt = `You are Izana AI, a medical information assistant specialized in reproductive health and fertility treatment for couples...
+        const system_prompt = `You are Izana AI, a medical information assistant specialized in reproductive health and fertility treatment for couples. Your task is to determine if the user's query is related to fertility. Respond with isValidFertilityQuery: true if relevant, false otherwise.`;
 
-// ... rest of the system prompt remains the same ...
+        if (triageResult.isValidFertilityQuery) {
+            search_query = user_message
+        } else {
+            search_query = user_message
+        }
 
-// IMPORTANT: If the user is asking a follow-up question about their previously uploaded lab results (e.g., asking about FSH, Estradiol, or specific values), you MUST set isValidFertilityQuery: true. Only set it to false if the query is completely unrelated to fertility or medical health.`;
-
-// Semantic search and reranking remains the same...
-
-        # 3. GENERATE RESPONSE
         system_prompt = f"""You are Izana AI, a medical information assistant specialized in reproductive health and fertility treatment for couples.
 Your responses should be tailored specifically for couples who are undertaking fertility treatment (IVF, IUI, ICSI, ovulation induction, etc.).
 Always address both partners when relevant, acknowledging that fertility treatment is a journey couples take together.
@@ -330,8 +273,7 @@ Always include a disclaimer that this is informational and not a substitute for 
 IMPORTANT: Respond in {language_name}. All your responses must be in {language_name}.
 
 CONTEXT FROM MEDICAL KNOWLEDGE BASE:
-{context_text}
-{missing_params_text}"""
+{context_text}"""
 
         try:
             draft_comp = await retry_api_call(

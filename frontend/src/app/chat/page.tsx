@@ -742,9 +742,8 @@ function ChatPageContent() {
     }
   };
 
-const handleSend = async (text?: string, isHidden = false) => {
-  const query = text || input.trim();
-  if (!query || isLoading) return;
+// Add SSE stream parsing fix
+if (data === '[DONE]' || data.includes('[DONE]')) continue;
 
   messageCountRef.current += 1;
 
