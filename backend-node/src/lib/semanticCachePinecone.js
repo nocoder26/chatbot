@@ -104,21 +104,28 @@ export async function upsertCachedAnswer(question, answer, language = 'en', meta
     const id = `sc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const expiresAt = new Date(Date.now() + CACHE_TTL_DAYS * 24 * 60 * 60 * 1000).toISOString();
 
-    await semanticCacheIndex.upsert([{
-      id,
-      values: queryVector,
-      metadata: {
-        question: question.slice(0, 1000),
-        answer: answer.slice(0, 4000),
-        language,
-        created_at: new Date().toISOString(),
-        expires_at: expiresAt,
-        ...metadata,
-      },
-    }]);
+const records = [{
+  id,
+  values: queryVector,
+  metadata: {
+    question: question.slice(0, 1000),
+    answer: answer.slice(0, 4000),
+    language,
+    created_at: new Date().toISOString(),
+    expires_at: expiresAt,
+    ...metadata,
+  },
+}];
 
-    console.log(`[SemanticCache] Cached Q&A: "${question.slice(0, 50)}..." (${language})`);
-    return true;
+if (!records || records.length === 0) {
+  console.log('Skipping empty Pinecone upsert');
+  return false;
+}
+
+await semanticCacheIndex.upsert(records);
+
+console.log(`[SemanticCache] Cached Q&A: "${question.slice(0, 50)}..." (${language})`);
+return true;
   } catch (err) {
     console.error('[SemanticCache] Upsert error:', err.message);
     return false;

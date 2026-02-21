@@ -136,21 +136,24 @@ export async function vectorizeAndStore(userId, type, content, metadata = {}) {
     const pseudoId = hashUserId(userId);
     const id = `${type}_${pseudoId}_${Date.now()}`;
 
-    const records = [{
-      id,
-      values: vector,
-      metadata: {
-        type,
-        userId: pseudoId,
-        content: content.slice(0, 1000),
-        timestamp: new Date().toISOString(),
-        ...metadata,
-      },
-    }];
+const records = [{
+  id,
+  values: vector,
+  metadata: {
+    type,
+    userId: pseudoId,
+    content: content.slice(0, 1000),
+    timestamp: new Date().toISOString(),
+    ...metadata,
+  },
+}];
 
-    if (!records || records.length === 0) return;
+if (!records || records.length === 0) {
+  console.log('Skipping empty Pinecone upsert');
+  return;
+}
 
-    await userdataIndex.upsert(records);
+await userdataIndex.upsert(records);
   } catch (err) {
     console.error('[Pinecone] Vectorize error:', err.message);
   }

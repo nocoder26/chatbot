@@ -83,7 +83,7 @@ ${contextSummary || 'No specific context available.'}`;
         { role: 'user', content: userContent },
       ],
       temperature: 0.7,
-      max_tokens: 400,
+      max_tokens: 1024,
       response_format: { type: 'json_object' },
     });
 
