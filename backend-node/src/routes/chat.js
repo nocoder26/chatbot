@@ -17,9 +17,11 @@ import { logGap } from '../lib/gapLogger.js';
 import { queryCachedAnswer, upsertCachedAnswer, isCacheAvailable } from '../lib/semanticCachePinecone.js';
 
 // Micro-Agents
+// Add BloodworkEvaluationSwarm import
 import { triageQuery, isTriageAvailable } from '../agents/triageAgent.js';
 import { executeRetrievalSwarm } from '../agents/retrievalSwarm.js';
 import { synthesizeResponse, synthesizeResponseStream, generateFollowUpQuestions, formatCitation, isSynthesizerAvailable } from '../agents/clinicalSynthesizer.js';
+import { evaluateBloodworkKnowledgeGap } from '../agents/bloodworkEvaluationSwarm.js';
 
 const router = Router();
 
@@ -99,17 +101,15 @@ router.get('/:chatId/messages', verifyJWT, async (req, res) => {
  */
 router.post('/', verifyJWT, requireConsent, async (req, res) => {
   try {
-    const { message, chatId, title, stream = true, language = 'en', clinical_data, treatment, session_id } = req.body;
-    if (!message || typeof message !== 'string') {
-      return res.status(400).json({ error: 'Message is required' });
-    }
+    // Parallel BloodworkMemorySwarm with normal retrieval
+const [retrievalResult, userLabResults] = await Promise.all([
+  executeRetrievalSwarm(triageResult.searchQueries, queryText),
+  queryBloodworkMemory(userId)
+]);
 
-    const userId = req.userId;
-    const queryText = message.trim();
-
-    // Session tracking
-    const session = await sessionManager.getOrCreateSession(session_id, userId);
-    const activeSessionId = session?.session_id;
+if (userLabResults && userLabResults.length > 0) {
+  effectiveMessage += `\n\nPatient's known lab results: ${JSON.stringify(userLabResults)}. Personalize your response using these values. If the medical context does not explicitly explain these specific values, you may use pre-trained knowledge, but do not state the context was missing.`;
+}
 
     // Check semantic cache first
     if (isCacheAvailable()) {
@@ -176,30 +176,39 @@ router.post('/', verifyJWT, requireConsent, async (req, res) => {
     // MICRO-AGENT PIPELINE
     // ============================================
 
-    // AGENT 1: Triage (validates query + generates search queries)
-    let triageResult;
-    try {
-      triageResult = await triageQuery(queryText);
-    } catch (err) {
-      console.warn('[Chat] Triage agent failed, using fallback:', err.message);
-      triageResult = {
-        isValidFertilityQuery: true,
-        rejectionReason: null,
-        searchQueries: [queryText, queryText],
-      };
-    }
+// AGENT 1: Triage (validates query + generates search queries)
+let triageResult;
+try {
+  triageResult = await triageQuery(queryText);
+} catch (err) {
+  console.warn('[Chat] Triage agent failed, using fallback:', err.message);
+  triageResult = {
+    isValidFertilityQuery: true,
+    rejectionReason: null,
+    searchQueries: [queryText, queryText],
+  };
+}
 
-    // Short-circuit if query is rejected
-    if (!triageResult.isValidFertilityQuery && triageResult.rejectionReason) {
-      // Log rejected query
-      prisma.userActivity.create({
-        data: {
-          userId,
-          type: 'query_rejected',
-          metadata: { query: queryText.slice(0, 200), reason: triageResult.rejectionReason },
-        },
-      }).catch(() => {});
+// Short-circuit if query is rejected
+if (!triageResult.isValidFertilityQuery && triageResult.rejectionReason) {
+  // Log rejected query
+  prisma.userActivity.create({
+    data: {
+      userId,
+      type: 'query_rejected',
+      metadata: { query: queryText.slice(0, 200), reason: triageResult.rejectionReason },
+    },
+  }).catch(() => {});
+  
+  // Parallel BloodworkMemorySwarm with normal retrieval
+  const [retrievalResult, userLabResults] = await Promise.all([
+    executeRetrievalSwarm(triageResult.searchQueries, queryText),
+    queryBloodworkMemory(userId)
+  ]);
 
+  if (userLabResults && userLabResults.length > 0) {
+    effectiveMessage += `\n\nPatient's known lab results: ${JSON.stringify(userLabResults)}. Personalize your response using these values. If the medical context does not explicitly explain these specific values, you may use pre-trained knowledge, but do not state the context was missing.`;
+  }
       if (stream) {
         res.setHeader('Content-Type', 'text/event-stream');
         res.setHeader('Cache-Control', 'no-cache');
@@ -361,36 +370,59 @@ router.post('/', verifyJWT, requireConsent, async (req, res) => {
         followUpQuestions: followUpQuestions.slice(0, 3),
         session_id: activeSessionId,
       })}\n\n`);
-      res.end();
-
-      // Use cleanedText (without [Q1] markers) for storage
-      const responseToStore = cleanedText || fullResponse;
-
-      // Update session
-      if (activeSessionId) {
-        sessionManager.updateHistory(activeSessionId, 'user', queryText).catch(() => {});
-        sessionManager.updateHistory(activeSessionId, 'ai', responseToStore).catch(() => {});
-        sessionManager.cacheContext(activeSessionId, kb_final_context, kb_final_context[0]?.score || 0).catch(() => {});
-      }
-
-      // Save AI response
-      const aiEnc = isEncryptionEnabled() ? encryptField(responseToStore) : null;
-      await prisma.message.create({
-        data: {
-          chatId: chat.id, role: 'ai', content: responseToStore,
-          encryptedData: aiEnc ? JSON.stringify(aiEnc) : null,
-          encryptionMeta: aiEnc ? { encrypted: true, version: 1 } : null,
-        },
+// Background BloodworkEvaluationSwarm after response is sent
+if (userLabResults?.length > 0) {
+  try {
+    const evalResult = await evaluateBloodworkKnowledgeGap(
+      queryText,
+      userLabResults,
+      kb_final_context,
+      fullResponse || responseText
+    );
+    if (evalResult?.knowledgeGapDetected) {
+      logGap({
+        query: queryText,
+        chat_history: chatHistory,
+        highest_score: kb_final_context[0]?.score || 0,
+        source: 'chat',
+        knowledge_gap: evalResult.missingInformation,
       });
+    }
+  } catch (evalErr) {
+    console.error('[Chat] Bloodwork evaluation failed:', evalErr.message);
+  }
+}
 
-      // Vectorize conversation
-      try {
-        vectorizeAndStore(userId, 'chat_message', `Q: ${queryText}\nA: ${responseToStore.slice(0, 500)}`, { conversationId: chat.id });
-      } catch (err) {
-        console.warn('[Chat] Vectorization failed:', err.message);
-      }
+res.end();
 
-    } else {
+// Update session and save response
+if (activeSessionId) {
+  sessionManager.updateHistory(activeSessionId, 'user', queryText).catch(() => {});
+  sessionManager.updateHistory(activeSessionId, 'ai', fullResponse || responseText).catch(() => {});
+  sessionManager.cacheContext(activeSessionId, kb_final_context, kb_final_context[0]?.score || 0).catch(() => {});
+}
+
+// Save AI response
+const responseToStore = cleanedText || fullResponse || responseText;
+const aiEnc = isEncryptionEnabled() ? encryptField(responseToStore) : null;
+await prisma.message.create({
+  data: {
+    chatId: chat.id,
+    role: 'ai',
+    content: responseToStore,
+    encryptedData: aiEnc ? JSON.stringify(aiEnc) : null,
+    encryptionMeta: aiEnc ? { encrypted: true, version: 1 } : null,
+  },
+});
+
+// Vectorize conversation
+try {
+  vectorizeAndStore(userId, 'chat_message', `Q: ${queryText}\nA: ${responseToStore.slice(0, 500)}`, { conversationId: chat.id });
+} catch (err) {
+  console.warn('[Chat] Vectorization failed:', err.message);
+}
+
+} else {
       // Non-streaming: use Clinical Synthesizer agent
       const CHAT_REQUEST_TIMEOUT_MS = parseInt(process.env.CHAT_REQUEST_TIMEOUT_MS || '55000', 10);
 

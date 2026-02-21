@@ -42,15 +42,15 @@ export async function triageQuery(query) {
 2. If invalid, provide a brief, kind rejection reason.
 3. Generate 2 semantic search queries to find relevant medical knowledge.
 
+CRITICAL NEW RULE FOR BLOODWORK FOLLOW-UPS:
+If the user asks about blood work metrics, hormones, or lab results BUT does not explicitly state they are uploading a new file, assume they are asking a follow-up question about previously uploaded results. DO NOT reject the query. Set isValidFertilityQuery: true and proceed.
+
 Respond ONLY with valid JSON:
 {
   "isValidFertilityQuery": boolean,
   "rejectionReason": string or null,
   "searchQueries": ["query1", "query2"]
-}
-
-Invalid queries include: non-health topics, harmful requests, off-topic questions.
-Valid queries include: ANY fertility, reproductive, hormonal, or pregnancy-related question.`;
+}`;
 
   try {
     const controller = new AbortController();

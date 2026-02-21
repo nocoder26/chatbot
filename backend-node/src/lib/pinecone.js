@@ -212,6 +212,23 @@ export async function queryConversationMemory(queryVector, userId, conversationI
   }
 }
 
+export async function queryBloodworkMemory(userId, topK = 5) {
+  if (!bloodworkIndex) return [];
+  try {
+    const pseudoId = hashUserId(userId);
+    const filter = { userId: pseudoId };
+    return queryByVector(
+      new Array(EMBEDDING_DIMS).fill(0.0001), // small vector to match any
+      topK,
+      filter,
+      'bloodwork'
+    );
+  } catch (err) {
+    console.error('[Pinecone] Bloodwork memory query error:', err.message);
+    return [];
+  }
+}
+
 /**
  * Delete vectors associated with a user (GDPR right to erasure).
  */

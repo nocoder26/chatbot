@@ -8,6 +8,7 @@ import { hashUserId } from '../gdpr/sanitizer.js';
 
 const MAX_CHAT_HISTORY = 4;
 const SESSION_TTL = parseInt(process.env.SESSION_TTL || '86400', 10); // 24h
+const BLOODWORK_KEY_PREFIX = 'bw:';
 
 /**
  * Generate a new session ID.
@@ -30,6 +31,7 @@ export async function createSession(userId) {
     user_id: hashedUserId,
     chat_history: [],
     context_cache: null,
+    bloodwork_cache: null,
     created_at: new Date().toISOString(),
     last_active: new Date().toISOString(),
   };
