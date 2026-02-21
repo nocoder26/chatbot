@@ -4,7 +4,6 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-  url      = env("DATABASE_URL")
 }
 
 model User {
@@ -184,4 +183,16 @@ model AuditLog {
   details       Json     @default("{}")
   integrityHash String
   createdAt     DateTime @default(now())
+}
+
+model EvalLog {
+  id                   String   @id @default(uuid())
+  createdAt            DateTime @default(now())
+  query                String
+  retrievedContext     String
+  finalResponse        String
+  kbUsagePercentage    Float
+  isHallucination      Boolean
+  knowledgeGapDetected Boolean
+  missingInformation   String
 }

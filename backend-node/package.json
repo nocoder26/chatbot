@@ -4,6 +4,9 @@
   "description": "Izana AI Node.js/Express backend with Prisma",
   "main": "src/index.js",
   "type": "module",
+  "prisma": {
+    "schema": "prisma/schema.prisma"
+  },
   "scripts": {
     "postinstall": "prisma generate",
     "start": "prisma db push --skip-generate && node src/index.js",
