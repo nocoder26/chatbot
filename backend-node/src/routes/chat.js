@@ -99,6 +99,7 @@ router.get('/:chatId/messages', verifyJWT, async (req, res) => {
  * 2. Retrieval Swarm: Parallel Pinecone searches + Cohere rerank
  * 3. Clinical Synthesizer: Generate response with citations
  */
+// Remove duplicate declaration
 router.post('/', verifyJWT, requireConsent, async (req, res) => {
   try {
     // Parallel BloodworkMemorySwarm with normal retrieval
