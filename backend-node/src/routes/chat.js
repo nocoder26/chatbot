@@ -6,7 +6,7 @@ import { Router } from 'express';
 import prisma from '../lib/prisma.js';
 import { streamLLMResponse, getLLMResponse } from '../lib/llm.js';
 import { verifyJWT } from '../middleware/auth.js';
-import { vectorizeAndStore, queryConversationMemory } from '../lib/pinecone.js';
+import { vectorizeAndStore, queryConversationMemory, queryBloodworkMemory } from '../lib/pinecone.js';
 import { hashUserId } from '../gdpr/sanitizer.js';
 import { checkSufficiency } from '../lib/sufficiency.js';
 import { encryptField, decryptField, isEncryptionEnabled } from '../gdpr/encryption.js';
@@ -105,15 +105,22 @@ var triageResult = null;
 
 router.post('/', verifyJWT, requireConsent, async (req, res) => {
   try {
-    // Parallel BloodworkMemorySwarm with normal retrieval
-const [retrievalResult, userLabResults] = await Promise.all([
-  executeRetrievalSwarm(triageResult?.searchQueries || [], queryText),
-  queryBloodworkMemory(userId)
-]);
+    // Extract request parameters
+    const { message, language = 'en', stream = false, chatId, clinical_data, treatment, title } = req.body;
+    const userId = req.userId;
+    const queryText = (message || '').trim();
 
-if (userLabResults && userLabResults.length > 0) {
-  effectiveMessage += `\n\nPatient's known lab results: ${JSON.stringify(userLabResults)}. Personalize your response using these values. If the medical context does not explicitly explain these specific values, you may use pre-trained knowledge, but do not state the context was missing.`;
-}
+    if (!queryText) {
+      return res.status(400).json({ error: 'message is required' });
+    }
+
+    // Session management
+    const hashedUserId = hashUserId(userId);
+    let session = await sessionManager.getSession(hashedUserId);
+    if (!session) {
+      session = await sessionManager.createSession(hashedUserId);
+    }
+    const activeSessionId = session?.session_id;
 
     // Check semantic cache first
     if (isCacheAvailable()) {
