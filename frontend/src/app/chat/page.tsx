@@ -742,14 +742,10 @@ function ChatPageContent() {
     }
   };
 
-// Add SSE stream parsing fix
-// Step 1: Fix Loop Logic with proper controller handling
-if (data === '[DONE]' || data.includes('[DONE]')) {
-  controller.close();
-  return;
-}
+  const handleSend = async (query: string = input.trim(), isHidden = false) => {
+    if (!query) return;
 
-  messageCountRef.current += 1;
+    messageCountRef.current += 1;
 
   // Generate unique IDs for this message pair
   const timestamp = Date.now();
@@ -1485,8 +1481,7 @@ if (data === '[DONE]' || data.includes('[DONE]')) {
 
 // --- PAGE WRAPPER WITH SUSPENSE ---
 export default function ChatPage() {
-  // Step 2: Fix Component Structure with proper loading state
-return (
+  return (
     <Suspense fallback={
       <div className="h-screen w-full flex items-center justify-center bg-izana-light dark:bg-izana-dark">
         <Loader2 className="w-8 h-8 animate-spin text-izana-primary dark:text-izana-teal" />
