@@ -177,6 +177,7 @@ if (userLabResults && userLabResults.length > 0) {
     // ============================================
 
 // AGENT 1: Triage (validates query + generates search queries)
+// Declare triageResult in the outer scope
 let triageResult;
 try {
   triageResult = await triageQuery(queryText);
