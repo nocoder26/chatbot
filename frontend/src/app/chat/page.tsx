@@ -922,36 +922,55 @@ const handleSend = async (text?: string, isHidden = false) => {
 
     setIsLoading(true);
     try {
-      const data: ChatResponse = await sendChatMessage({
-        message:
-          "Please analyze these fertility blood work results and provide a detailed interpretation.",
-        language: langCode,
-        clinical_data: { results: confirmedData.results },
-        treatment: confirmedData.treatment || undefined,
-        ...(chatIdFromUrl && { chatId: chatIdFromUrl }),
-      });
-
-      const combinedContent = savedFertilityNote
-        ? `${data.response}\n\n${savedFertilityNote}`
-        : data.response;
-
-      const combinedQuestions = data.suggested_questions?.length
-        ? data.suggested_questions
-        : savedBloodworkQuestions;
-
-      setMessages((p) => [
-        ...p,
+      await sendChatMessage(
         {
-          id: Date.now() + 1,
-          type: "bot",
-          content: combinedContent,
-          suggested_questions: combinedQuestions,
-          citations: data.citations || [],
-          isAnimating: true,
-          userQuery: `Blood work analysis: ${labSummary}`,
-          rating: 0,
+          message:
+            "Please analyze these fertility blood work results and provide a detailed interpretation.",
+          language: langCode,
+          clinical_data: { results: confirmedData.results },
+          treatment: confirmedData.treatment || undefined,
+          ...(chatIdFromUrl && { chatId: chatIdFromUrl }),
         },
-      ]);
+        (chunk) => {
+          setMessages((prevMessages) => {
+            const lastMessage = prevMessages[prevMessages.length - 1];
+            if (lastMessage?.type === 'bot') {
+              return prevMessages.slice(0, -1).concat({
+                ...lastMessage,
+                content: (lastMessage.content || '') + chunk.content,
+              });
+            } else {
+              return prevMessages.concat({
+                id: Date.now(),
+                type: 'bot',
+                content: chunk.content,
+                isAnimating: true,
+              });
+            }
+          });
+        },
+        () => {
+          setIsLoading(false);
+          setMessages((prevMessages) =>
+            prevMessages.map((msg) =>
+              msg.isAnimating ? { ...msg, isAnimating: false } : msg
+            )
+          );
+        },
+        (error) => {
+          console.error('Chat error:', error);
+          setIsLoading(false);
+          setMessages((p) => [
+            ...p,
+            {
+              id: Date.now() + 1,
+              type: "bot",
+              content: getTranslation("chatError", langCode),
+              isAnimating: false,
+            },
+          ]);
+        }
+      );
     } catch (err) {
       console.error("Blood work chat error:", err);
       setMessages((p) => [
