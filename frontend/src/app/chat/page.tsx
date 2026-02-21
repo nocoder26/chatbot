@@ -654,11 +654,15 @@ function ChatPageContent() {
     fetchChatMessages(chatIdFromUrl)
       .then((data) => {
         if (cancelled) return;
-        const mapped: ChatMessage[] = (data.messages || []).map((m) => ({
-          id: m.id,
+        const mapped: ChatMessage[] = (data.messages || []).map((m, index) => ({
+          id: m.id || `history-${index}`,
           type: m.role === "ai" ? "bot" : "user",
           content: m.content,
           isAnimating: false,
+          // Historical messages are already complete - enable interactive UI
+          isStreamComplete: m.role === "ai",
+          // Set userQuery for bot messages to enable feedback
+          userQuery: m.role === "ai" ? `history-${index}` : undefined,
         }));
         setMessages(mapped);
       })
@@ -744,6 +748,11 @@ const handleSend = async (text?: string, isHidden = false) => {
 
   messageCountRef.current += 1;
 
+  // Generate unique IDs for this message pair
+  const timestamp = Date.now();
+  const userMessageId = `user-${timestamp}-${Math.random().toString(36).slice(2, 8)}`;
+  const botMessageId = `bot-${timestamp}-${Math.random().toString(36).slice(2, 8)}`;
+
   // Check for bloodwork query first
   if (
     query.toLowerCase().includes("blood work") ||
@@ -752,30 +761,28 @@ const handleSend = async (text?: string, isHidden = false) => {
     if (!isHidden) {
       setMessages((p) => [
         ...p,
-        { id: Date.now(), type: "user", content: query, isAnimating: false },
+        { id: userMessageId, type: "user", content: query, isAnimating: false },
       ]);
     }
     setMessages((p) => [
       ...p,
       {
-        id: Date.now() + 1,
+        id: botMessageId,
         type: "bot",
         content: getTranslation("uploadPrompt", langCode),
         isBloodWorkPrompt: true,
         isAnimating: false,
+        isStreamComplete: true,
       },
     ]);
     setInput("");
     return;
   }
 
-  // Track the bot message ID for updates
-  const botMessageId = Date.now() + 1;
-
   if (!isHidden) {
     setMessages((p) => [
       ...p,
-      { id: Date.now(), type: "user", content: query, isAnimating: false, userQuery: query },
+      { id: userMessageId, type: "user", content: query, isAnimating: false, userQuery: query },
     ]);
   }
 
@@ -891,13 +898,17 @@ const handleSend = async (text?: string, isHidden = false) => {
       : "";
 
     const userQuery = `Analyze my lab results: ${labSummary}${treatmentLabel}`;
-    const botMessageId = Date.now() + 1;
+
+    // Generate unique IDs
+    const timestamp = Date.now();
+    const userMessageId = `user-bw-${timestamp}-${Math.random().toString(36).slice(2, 8)}`;
+    const botMessageId = `bot-bw-${timestamp}-${Math.random().toString(36).slice(2, 8)}`;
 
     // Add user message
     setMessages((p) => [
       ...p,
       {
-        id: Date.now(),
+        id: userMessageId,
         type: "user",
         content: userQuery,
         isAnimating: false,
@@ -1011,10 +1022,11 @@ const handleSend = async (text?: string, isHidden = false) => {
       setMessages((p) => [
         ...p,
         {
-          id: Date.now(),
+          id: `error-pdf-${Date.now()}`,
           type: "bot",
           content: getTranslation("pdfOnly", langCode),
           isAnimating: false,
+          isStreamComplete: true,
         },
       ]);
       return;
@@ -1024,10 +1036,11 @@ const handleSend = async (text?: string, isHidden = false) => {
       setMessages((p) => [
         ...p,
         {
-          id: Date.now(),
+          id: `error-size-${Date.now()}`,
           type: "bot",
           content: getTranslation("fileTooLarge", langCode),
           isAnimating: false,
+          isStreamComplete: true,
         },
       ]);
       return;
@@ -1037,7 +1050,7 @@ const handleSend = async (text?: string, isHidden = false) => {
     setMessages((p) => [
       ...p,
       {
-        id: Date.now(),
+        id: `upload-${Date.now()}`,
         type: "user",
         content: `${getTranslation("uploaded", langCode)} ${file.name}`,
         isAnimating: false,
@@ -1051,10 +1064,11 @@ const handleSend = async (text?: string, isHidden = false) => {
         setMessages((p) => [
           ...p,
           {
-            id: Date.now(),
+            id: `error-upload-${Date.now()}`,
             type: "bot",
             content: data.error || getTranslation("uploadError", langCode),
             isAnimating: false,
+            isStreamComplete: true,
           },
         ]);
         setIsUploadingPdf(false);
@@ -1072,10 +1086,11 @@ const handleSend = async (text?: string, isHidden = false) => {
         setMessages((p) => [
           ...p,
           {
-            id: Date.now(),
+            id: `error-noresults-${Date.now()}`,
             type: "bot",
             content: getTranslation("noResults", langCode),
             isAnimating: false,
+            isStreamComplete: true,
           },
         ]);
       }
@@ -1084,10 +1099,11 @@ const handleSend = async (text?: string, isHidden = false) => {
       setMessages((p) => [
         ...p,
         {
-          id: Date.now(),
+          id: `error-uploadfail-${Date.now()}`,
           type: "bot",
           content: getTranslation("uploadFailed", langCode),
           isAnimating: false,
+          isStreamComplete: true,
         },
       ]);
     } finally {
@@ -1238,21 +1254,25 @@ const handleSend = async (text?: string, isHidden = false) => {
                 )}
                 {/* Message Content */}
                 {m.isAnimating ? (
-                  <GeminiFadeText
-                    text={m.content}
-                    onComplete={() =>
-                      setMessages((prev) =>
-                        prev.map((msg) =>
-                          msg.id === m.id
-                            ? { ...msg, isAnimating: false }
-                            : msg
+                  m.content ? (
+                    <GeminiFadeText
+                      text={m.content}
+                      onComplete={() =>
+                        setMessages((prev) =>
+                          prev.map((msg) =>
+                            msg.id === m.id
+                              ? { ...msg, isAnimating: false }
+                              : msg
+                          )
                         )
-                      )
-                    }
-                  />
+                      }
+                    />
+                  ) : (
+                    <span className="text-white/60">...</span>
+                  )
                 ) : (
                   <div className="space-y-4">
-                    {m.content.split("\n\n").map((p, i) => (
+                    {m.content.split("\n\n").filter((p) => p.trim() !== "").map((p, i) => (
                       <p key={i} className="leading-relaxed">
                         {p}
                       </p>
@@ -1381,8 +1401,8 @@ const handleSend = async (text?: string, isHidden = false) => {
           ))
         )}
 
-        {/* Loading Indicator */}
-        {isLoading && (
+        {/* Loading Indicator - only show when no bot message is currently streaming */}
+        {isLoading && !messages.some((m) => m.type === "bot" && m.isAnimating && m.content) && (
           <div className="flex gap-3">
             <Loader2 className="w-5 h-5 animate-spin text-izana-primary dark:text-izana-teal" />
             <span className="text-sm text-izana-primary dark:text-izana-teal font-bold">
