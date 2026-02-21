@@ -242,13 +242,7 @@ if (!triageResult.isValidFertilityQuery && triageResult.rejectionReason) {
     }
 
     // AGENT 2: Retrieval Swarm (parallel Pinecone + Cohere rerank)
-    let retrievalResult;
-    try {
-      retrievalResult = await executeRetrievalSwarm(triageResult.searchQueries, queryText);
-    } catch (err) {
-      console.warn('[Chat] Retrieval swarm failed:', err.message);
-      retrievalResult = { chunks: [], rerankUsed: false, allBelowThreshold: true };
-    }
+retrievalResult = await executeRetrievalSwarm(triageResult.searchQueries, queryText);
 
     const kb_final_context = retrievalResult.chunks || [];
     const hasKBContext = kb_final_context.length > 0;
