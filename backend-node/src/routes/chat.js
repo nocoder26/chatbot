@@ -290,20 +290,18 @@ router.post('/', verifyJWT, requireConsent, async (req, res) => {
       let fullResponse;
       let synthesizerUsed = false;
 
-      if (isSynthesizerAvailable() && !stream) {
-        // Non-streaming synthesizer (for JSON mode)
-        try {
-          const synthResult = await synthesizeResponse(effectiveMessage, kb_final_context, chatHistory, language);
-          fullResponse = synthResult.response;
-          res.write(`data: ${JSON.stringify({ content: fullResponse })}\n\n`);
-          if (synthResult.followUpQuestions?.length > 0) {
-            res.write(`data: ${JSON.stringify({ suggested_questions: synthResult.followUpQuestions })}\n\n`);
-          }
-          synthesizerUsed = true;
-        } catch (err) {
-          console.warn('[Chat] Synthesizer failed, using streaming LLM:', err.message);
-        }
-      }
+if (isSynthesizerAvailable()) {
+  try {
+    const synthStream = await synthesizeResponse(effectiveMessage, kb_final_context, chatHistory, language, true);
+    for await (const chunk of synthStream) {
+      res.write(`data: ${JSON.stringify({ content: chunk })}\n\n`);
+      if (typeof res.flush === 'function') res.flush();
+    }
+    synthesizerUsed = true;
+  } catch (err) {
+    console.warn('[Chat] Synthesizer stream failed, falling back:', err.message);
+  }
+}
 
       if (!synthesizerUsed) {
         // Fallback: streaming LLM

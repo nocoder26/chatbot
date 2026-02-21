@@ -736,19 +736,81 @@ function ChatPageContent() {
     }
   };
 
-  const handleSend = async (text?: string, isHidden = false) => {
-    const query = text || input;
-    if (!query.trim() || isLoading) return;
+const handleSend = async (text?: string, isHidden = false) => {
+  const query = text || input.trim();
+  if (!query || isLoading) return;
 
-    messageCountRef.current += 1;
+  messageCountRef.current += 1;
 
-    if (!isHidden) {
-      setMessages((p) => [
-        ...p,
-        { id: Date.now(), type: "user", content: query, isAnimating: false },
-      ]);
-    }
-    setInput("");
+  if (!isHidden) {
+    setMessages((p) => [
+      ...p,
+      { id: Date.now(), type: "user", content: query, isAnimating: false },
+    ]);
+  }
+  setInput("");
+  setIsLoading(true);
+
+  try {
+    await sendChatMessage(
+      {
+        message: query,
+        language: langCode,
+        ...(chatIdFromUrl && { chatId: chatIdFromUrl }),
+      },
+      (chunk) => {
+        setMessages((prevMessages) => {
+          const lastMessage = prevMessages[prevMessages.length - 1];
+          if (lastMessage?.type === 'bot') {
+            return prevMessages.slice(0, -1).concat({
+              ...lastMessage,
+              content: (lastMessage.content || '') + chunk.content,
+            });
+          } else {
+            return prevMessages.concat({
+              id: Date.now(),
+              type: 'bot',
+              content: chunk.content,
+              isAnimating: true,
+            });
+          }
+        });
+      },
+      () => {
+        setIsLoading(false);
+        setMessages((prevMessages) =>
+          prevMessages.map((msg) =>
+            msg.isAnimating ? { ...msg, isAnimating: false } : msg
+          )
+        );
+      },
+      (error) => {
+        console.error('Chat error:', error);
+        setIsLoading(false);
+        setMessages((p) => [
+          ...p,
+          {
+            id: Date.now() + 1,
+            type: "bot",
+            content: getTranslation("chatError", langCode),
+            isAnimating: false,
+          },
+        ]);
+      }
+    );
+  } catch (err) {
+    console.error('Chat error:', err);
+    setIsLoading(false);
+    setMessages((p) => [
+      ...p,
+      {
+        id: Date.now() + 1,
+        type: "bot",
+        content: getTranslation("chatError", langCode),
+        isAnimating: false,
+      },
+    ]);
+  }
 
     if (
       query.toLowerCase().includes("blood work") ||

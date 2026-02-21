@@ -392,20 +392,59 @@ export async function fetchChatMessages(
 }
 
 export async function sendChatMessage(
-  payload: ChatPayload
-): Promise<ChatResponse> {
-  const response = await fetch(resolveApiUrl("/api/chat"), {
-    method: "POST",
-    headers: getAuthHeaders(),
-    body: JSON.stringify({ ...payload, stream: false }),
-  });
+  payload: ChatPayload,
+  onChunk: (chunk: any) => void,
+  onComplete: () => void,
+  onError: (error: Error) => void
+): Promise<void> {
+  try {
+    const response = await fetch(resolveApiUrl("/api/chat"), {
+      method: "POST",
+      headers: getAuthHeaders(),
+      body: JSON.stringify({ ...payload, stream: true }),
+    });
 
-  if (!response.ok) {
-    const detail = await response.text().catch(() => "Unknown error");
-    throw new Error(`Chat request failed (${response.status}): ${detail}`);
+    if (!response.ok) {
+      const detail = await response.text().catch(() => "Unknown error");
+      onError(new Error(`Chat request failed (${response.status}): ${detail}`));
+      return;
+    }
+
+    if (!response.body) {
+      onError(new Error("Response body is null"));
+      return;
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        onComplete();
+        break;
+      }
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+
+      for (const line of lines) {
+        const trimmedLine = line.trim();
+        if (trimmedLine.startsWith("data: ")) {
+          try {
+            const data = JSON.parse(trimmedLine.slice(6));
+            onChunk(data);
+          } catch (e) {
+            console.error("Failed to parse SSE data:", e);
+          }
+        }
+      }
+    }
+  } catch (error) {
+    onError(error as Error);
   }
-
-  return response.json();
 }
 
 export async function submitFeedback(
