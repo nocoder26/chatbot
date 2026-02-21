@@ -100,6 +100,9 @@ router.get('/:chatId/messages', verifyJWT, async (req, res) => {
  * 3. Clinical Synthesizer: Generate response with citations
  */
 // Remove duplicate declaration
+// Declare triageResult at the top of the route handler
+var triageResult = null;
+
 router.post('/', verifyJWT, requireConsent, async (req, res) => {
   try {
     // Parallel BloodworkMemorySwarm with normal retrieval
@@ -179,17 +182,9 @@ if (userLabResults && userLabResults.length > 0) {
 
 // AGENT 1: Triage (validates query + generates search queries)
 // Declare triageResult in the outer scope
-let triageResult;
-try {
-  triageResult = await triageQuery(queryText);
-} catch (err) {
-  console.warn('[Chat] Triage agent failed, using fallback:', err.message);
-  triageResult = {
-    isValidFertilityQuery: true,
-    rejectionReason: null,
-    searchQueries: [queryText, queryText],
-  };
-}
+// Remove let declaration
+// Remove let declaration
+triageResult = await triageQuery(queryText);
 
 // Short-circuit if query is rejected
 if (!triageResult.isValidFertilityQuery && triageResult.rejectionReason) {
