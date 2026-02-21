@@ -743,7 +743,11 @@ function ChatPageContent() {
   };
 
 // Add SSE stream parsing fix
-if (data === '[DONE]' || data.includes('[DONE]')) continue;
+// Step 1: Fix Loop Logic with proper controller handling
+if (data === '[DONE]' || data.includes('[DONE]')) {
+  controller.close();
+  return;
+}
 
   messageCountRef.current += 1;
 
@@ -1481,8 +1485,13 @@ if (data === '[DONE]' || data.includes('[DONE]')) continue;
 
 // --- PAGE WRAPPER WITH SUSPENSE ---
 export default function ChatPage() {
-  return (
-    <Suspense fallback={<div>Loading...</div>}>
+  // Step 2: Fix Component Structure with proper loading state
+return (
+    <Suspense fallback={
+      <div className="h-screen w-full flex items-center justify-center bg-izana-light dark:bg-izana-dark">
+        <Loader2 className="w-8 h-8 animate-spin text-izana-primary dark:text-izana-teal" />
+      </div>
+    }>
       <ChatPageContent />
     </Suspense>
   );
