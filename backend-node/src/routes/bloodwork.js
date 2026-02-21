@@ -1,7 +1,10 @@
+/**
+ * Bloodwork Route - Refactored with Parallel Micro-Agent Architecture
+ * Pipeline: PDF Extract → Biomarker Extractor Agent → Parallel(Vectorize + Synthesizer)
+ */
 import { Router } from 'express';
 import multer from 'multer';
 import fs from 'fs/promises';
-import path from 'path';
 import os from 'os';
 import prisma from '../lib/prisma.js';
 import { getLLMResponse } from '../lib/llm.js';
@@ -9,8 +12,12 @@ import { verifyJWT } from '../middleware/auth.js';
 import { vectorizeBloodwork, querySimilar } from '../lib/pinecone.js';
 import { encryptField, isEncryptionEnabled } from '../gdpr/encryption.js';
 import { requireConsent } from '../gdpr/consentCheck.js';
-import { retrieveKB } from '../lib/retrieval.js';
 import { logGap } from '../lib/gapLogger.js';
+
+// Micro-Agents
+import { extractBiomarkers, isExtractorAvailable, identifyMissingTests, STANDARD_FERTILITY_PANEL } from '../agents/biomarkerExtractor.js';
+import { synthesizeBloodworkAnalysis, isBloodworkSynthesizerAvailable } from '../agents/bloodworkSynthesizer.js';
+import { executeRetrievalSwarm } from '../agents/retrievalSwarm.js';
 
 const router = Router();
 const upload = multer({
@@ -33,71 +40,15 @@ const LANG_NAMES = {
   ta: 'Tamil', te: 'Telugu', ml: 'Malayalam', fr: 'French', pt: 'Portuguese',
 };
 
-// Standard fertility panel for missing test detection
-const STANDARD_FERTILITY_PANEL = [
-  'FSH', 'LH', 'AMH', 'Estradiol', 'Progesterone',
-  'Prolactin', 'TSH', 'Free T4', 'Testosterone',
-];
-
-function buildExtractionPrompt(langCode) {
-  const langName = LANG_NAMES[langCode] || 'English';
-  return `You are a medical lab analyst. Extract ALL lab results from the following text — every biomarker found.
-
-For each result, return:
-- "biomarker": marker name (keep medical terms in English)
-- "value": the measured value
-- "unit": unit of measurement
-
-Return ONLY valid JSON: {"biomarkers":[{"biomarker":"...","value":"...","unit":"..."}]}
-
-If no lab values found, return: {"biomarkers":[]}`;
-}
-
-function buildAnalysisPrompt(langCode, treatmentType) {
-  const langName = LANG_NAMES[langCode] || 'English';
-  const treatmentContext = treatmentType ? `\nTreatment context: ${treatmentType}` : '';
-
-  return `You are a reproductive health specialist analyzing blood work results.${treatmentContext}
-
-Provide:
-1. A clinical interpretation of each biomarker in context of reproductive health
-2. How markers relate to each other
-3. Relevance to fertility treatment if applicable
-4. Areas of concern or positive indicators
-
-Use flowing clinical prose (no bullet points unless requested).
-Do NOT use the word "cancer" - use "cell abnormalities" or "abnormal cell growth" instead.
-
-Respond entirely in ${langName}. All text in ${langName}.
-
-At the end, generate exactly 3 contextual follow-up questions the user might ask:
-[Q1] First question
-[Q2] Second question
-[Q3] Third question
-
-Also include citations to the knowledge base sources used (if any).`;
-}
-
 function extractJSON(text) {
   try { return JSON.parse(text); } catch (_) {}
-
-  const cleaned = text
-    .replace(/,\s*([}\]])/g, '$1')
-    .replace(/[\x00-\x1F\x7F]/g, ' ')
-    .replace(/\t/g, ' ');
+  const cleaned = text.replace(/,\s*([}\]])/g, '$1').replace(/[\x00-\x1F\x7F]/g, ' ').replace(/\t/g, ' ');
   try { return JSON.parse(cleaned); } catch (_) {}
-
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-  if (fenced) {
-    try { return JSON.parse(fenced[1].trim()); } catch (_) {}
-  }
-
+  if (fenced) { try { return JSON.parse(fenced[1].trim()); } catch (_) {} }
   const start = cleaned.indexOf('{');
   const end = cleaned.lastIndexOf('}');
-  if (start !== -1 && end > start) {
-    try { return JSON.parse(cleaned.slice(start, end + 1)); } catch (_) {}
-  }
-
+  if (start !== -1 && end > start) { try { return JSON.parse(cleaned.slice(start, end + 1)); } catch (_) {} }
   return null;
 }
 
@@ -114,8 +65,11 @@ function parseFollowUpQuestions(text) {
 
 /**
  * POST /api/upload-bloodwork
- * Accept PDF (<5MB), extract biomarkers, immediately delete PDF.
- * Returns: { extracted: [...], missing_tests: [...] }
+ * Micro-Agent Pipeline:
+ * 1. Parse PDF
+ * 2. Biomarker Extraction Agent (llama-3.1-8b, JSON mode)
+ * 3. Identify missing tests
+ * Returns: { extracted, missing_tests }
  */
 router.post('/upload', verifyJWT, requireConsent, upload.single('file'), async (req, res) => {
   let filePath = null;
@@ -129,7 +83,7 @@ router.post('/upload', verifyJWT, requireConsent, upload.single('file'), async (
     const userId = req.userId;
     const language = req.body?.language || 'en';
 
-    // Parse PDF
+    // Step 1: Parse PDF
     let pdfText;
     try {
       const buffer = await fs.readFile(filePath);
@@ -141,7 +95,7 @@ router.post('/upload', verifyJWT, requireConsent, upload.single('file'), async (
       console.error('PDF parse error:', err);
       return res.status(400).json({ error: 'Could not extract text from PDF. Ensure it is a valid PDF.' });
     } finally {
-      // IMMEDIATELY delete PDF after parsing (GDPR: no PII storage)
+      // IMMEDIATELY delete PDF after parsing (GDPR)
       try {
         await fs.unlink(filePath);
         filePath = null;
@@ -155,48 +109,61 @@ router.post('/upload', verifyJWT, requireConsent, upload.single('file'), async (
       return res.status(400).json({ error: 'No text could be extracted from the PDF.' });
     }
 
-    const truncatedText = pdfText.slice(0, 8000);
+    // Step 2: AGENT - Biomarker Extraction (llama-3.1-8b, JSON mode)
+    let extractionResult;
+    try {
+      if (isExtractorAvailable()) {
+        extractionResult = await extractBiomarkers(pdfText);
+      } else {
+        // Fallback to LLM without JSON mode
+        const truncatedText = pdfText.slice(0, 8000);
+        const extractionPrompt = `You are a medical lab analyst. Extract ALL lab results from the following text.
+For each result, return:
+- "biomarker": marker name
+- "value": the measured value
+- "unit": unit of measurement
+- "referenceRange": normal range if found
+- "isNormal": boolean
 
-    // Extract biomarkers using LLM
-    const extractionPrompt = buildExtractionPrompt(language);
-    const aiResponse = await getLLMResponse(extractionPrompt, truncatedText, {
-      temperature: 0.1,
-      maxTokens: 2048,
-      timeout: 30000,
-      responseFormat: 'json',
-    });
+Return ONLY valid JSON: {"results":[...]}`;
 
-    let extracted = [];
-    const parsed = extractJSON(aiResponse);
-    if (parsed && Array.isArray(parsed.biomarkers)) {
-      extracted = parsed.biomarkers
-        .filter((b) => b.biomarker && b.value)
-        .map((b) => ({
-          biomarker: String(b.biomarker).trim(),
-          value: String(b.value).trim(),
-          unit: String(b.unit || '').trim(),
-        }));
+        const aiResponse = await getLLMResponse(extractionPrompt, truncatedText, {
+          temperature: 0.1,
+          maxTokens: 2048,
+          timeout: 30000,
+          responseFormat: 'json',
+        });
+
+        const parsed = extractJSON(aiResponse);
+        extractionResult = {
+          results: Array.isArray(parsed?.results) ? parsed.results :
+                   Array.isArray(parsed?.biomarkers) ? parsed.biomarkers : [],
+        };
+      }
+    } catch (err) {
+      console.warn('[Bloodwork] Extraction agent failed:', err.message);
+      extractionResult = { results: [] };
     }
 
-    // Identify missing fertility panel tests
-    const extractedNames = new Set(extracted.map((b) => b.biomarker.toLowerCase()));
-    const missing_tests = STANDARD_FERTILITY_PANEL.filter(
-      (test) => !extractedNames.has(test.toLowerCase()) &&
-               !Array.from(extractedNames).some((e) => e.includes(test.toLowerCase()) || test.toLowerCase().includes(e))
-    );
+    const extracted = extractionResult.results.filter((b) => b.biomarker && b.value).map((b) => ({
+      biomarker: String(b.biomarker).trim(),
+      value: String(b.value).trim(),
+      unit: String(b.unit || '').trim(),
+      referenceRange: String(b.referenceRange || '').trim(),
+      isNormal: b.isNormal ?? null,
+    }));
+
+    // Step 3: Identify missing tests
+    const missing_tests = identifyMissingTests(extracted);
 
     // Log activity (fire-and-forget)
     prisma.userActivity.create({
       data: {
         userId,
         type: 'bloodwork_upload',
-        metadata: {
-          extracted_count: extracted.length,
-          missing_tests,
-          language,
-        },
+        metadata: { extracted_count: extracted.length, missing_tests, language },
       },
-    }).catch((e) => console.error('Activity log error:', e));
+    }).catch(() => {});
 
     res.json({
       extracted,
@@ -207,20 +174,18 @@ router.post('/upload', verifyJWT, requireConsent, upload.single('file'), async (
     console.error('Upload bloodwork error:', err);
     res.status(500).json({ error: err?.message || 'Upload failed' });
   } finally {
-    // Ensure PDF is deleted even on error
     if (filePath) {
-      try {
-        await fs.unlink(filePath);
-      } catch (_) {}
+      try { await fs.unlink(filePath); } catch (_) {}
     }
   }
 });
 
 /**
  * POST /api/analyze-bloodwork
- * Accept JSON body: { biomarkers: [...], treatment_type: "IVF" }
- * Synthesize query from biomarkers + treatment, route through KB retrieval + Cohere reranker.
- * Returns: { interpretation, citations, suggested_questions }
+ * Micro-Agent Pipeline:
+ * 1. Retrieval Swarm for KB context
+ * 2. PARALLEL: Pinecone vectorization + Bloodwork Synthesizer Agent
+ * Returns: { summary, flaggedItems, suggestedQuestions, citations }
  */
 router.post('/analyze', verifyJWT, requireConsent, async (req, res) => {
   try {
@@ -232,78 +197,131 @@ router.post('/analyze', verifyJWT, requireConsent, async (req, res) => {
 
     const userId = req.userId;
 
-    // Synthesize query from biomarkers for KB retrieval
+    // Synthesize search queries from biomarkers
     const biomarkerSummary = biomarkers
       .map((b) => `${b.biomarker}: ${b.value} ${b.unit || ''}`.trim())
       .join(', ');
-    const synthesizedQuery = treatment_type
-      ? `Interpret blood work results for ${treatment_type} treatment: ${biomarkerSummary}`
-      : `Interpret reproductive health blood work results: ${biomarkerSummary}`;
 
-    // Retrieve KB context with enhanced pipeline (query expansion + reranking)
-    const retrievalResult = await retrieveKB(synthesizedQuery);
-    const kbContext = retrievalResult.kb_final_context || [];
+    const searchQueries = [
+      treatment_type
+        ? `${treatment_type} blood work interpretation ${biomarkers.map(b => b.biomarker).slice(0, 3).join(' ')}`
+        : `fertility blood work interpretation ${biomarkers.map(b => b.biomarker).slice(0, 3).join(' ')}`,
+      `reproductive health biomarkers ${biomarkers.map(b => b.biomarker).slice(0, 3).join(' ')}`,
+    ];
 
-    // Check if all results are below threshold (gap)
-    if (retrievalResult.all_below_threshold || kbContext.length === 0) {
-      // Log gap asynchronously
-      logGap({
-        query: synthesizedQuery,
-        treatment: treatment_type,
-        highest_score: retrievalResult.kb_dense_candidates?.[0]?.score || 0,
-        missing_tests: [],
-        source: 'bloodwork_analyze',
-      });
+    // Step 1: Retrieval Swarm for KB context
+    let kbChunks = [];
+    try {
+      const retrievalResult = await executeRetrievalSwarm(searchQueries, biomarkerSummary);
+      kbChunks = retrievalResult.chunks || [];
+
+      // Log gap if no context
+      if (kbChunks.length === 0 || retrievalResult.allBelowThreshold) {
+        logGap({
+          query: biomarkerSummary,
+          treatment: treatment_type,
+          highest_score: kbChunks[0]?.score || 0,
+          source: 'bloodwork_analyze',
+        });
+      }
+    } catch (err) {
+      console.warn('[Bloodwork] Retrieval swarm failed:', err.message);
     }
 
-    // Build analysis prompt with KB context
-    let analysisPrompt = buildAnalysisPrompt(language, treatment_type);
-    if (kbContext.length > 0) {
-      const contextText = kbContext.map((c) => c.text).filter(Boolean).join('\n---\n');
-      analysisPrompt += `\n\nUse the following verified medical context from the knowledge base:\n${contextText}`;
-    }
+    // Step 2: PARALLEL - Vectorization + Synthesizer
+    const vectorContent = biomarkers.map((b) => `${b.biomarker}: ${b.value} ${b.unit || ''}`).join(', ');
 
-    // Format biomarkers for LLM
-    const biomarkersText = biomarkers
-      .map((b) => `${b.biomarker}: ${b.value} ${b.unit || ''}`)
-      .join('\n');
+    const [synthResult] = await Promise.all([
+      // Bloodwork Synthesizer Agent (llama-3.3-70b, JSON mode)
+      (async () => {
+        try {
+          if (isBloodworkSynthesizerAvailable()) {
+            return await synthesizeBloodworkAnalysis(biomarkers, treatment_type, kbChunks, language);
+          } else {
+            // Fallback to standard LLM
+            const langName = LANG_NAMES[language] || 'English';
+            const treatmentContext = treatment_type ? `\nTreatment context: ${treatment_type}` : '';
+            const kbContextText = kbChunks.map((c) => c.text).filter(Boolean).join('\n---\n');
 
-    // Get LLM analysis
-    const aiResponse = await getLLMResponse(analysisPrompt, biomarkersText, {
-      temperature: 0.3,
-      maxTokens: 2048,
-      timeout: 50000,
-    });
+            let analysisPrompt = `You are a reproductive health specialist analyzing blood work.${treatmentContext}
 
-    const { cleanedText: interpretation, questions: suggested_questions } = parseFollowUpQuestions(aiResponse);
+Provide a clinical interpretation focusing on fertility. Use flowing prose.
+Do NOT use the word "cancer" - use "cell abnormalities" instead.
+Respond in ${langName}.
 
-    // Extract citations from KB context
-    const citations = [...new Set(kbContext.map((c) => c.doc_id).filter(Boolean))];
+At the end, provide:
+[Q1] First follow-up question
+[Q2] Second follow-up question`;
+
+            if (kbContextText) {
+              analysisPrompt += `\n\nMedical reference context:\n${kbContextText}`;
+            }
+
+            const biomarkersText = biomarkers.map((b) => `${b.biomarker}: ${b.value} ${b.unit || ''}`).join('\n');
+            const aiResponse = await getLLMResponse(analysisPrompt, biomarkersText, {
+              temperature: 0.3,
+              maxTokens: 1500,
+              timeout: 25000,
+            });
+
+            const { cleanedText, questions } = parseFollowUpQuestions(aiResponse);
+
+            // Identify flagged items
+            const flagged = biomarkers.filter((b) => b.isNormal === false).map((b) => b.biomarker);
+
+            return {
+              summary: cleanedText,
+              flaggedItems: flagged,
+              suggestedQuestions: questions.slice(0, 2),
+            };
+          }
+        } catch (err) {
+          console.error('[Bloodwork] Synthesizer failed:', err.message);
+          return {
+            summary: "Unable to generate analysis. Please consult your healthcare provider.",
+            flaggedItems: [],
+            suggestedQuestions: [],
+          };
+        }
+      })(),
+
+      // Pinecone vectorization (fire-and-forget, catch silently)
+      (async () => {
+        try {
+          if (vectorContent.length > 0) {
+            await vectorizeBloodwork(userId, `Bloodwork: ${vectorContent}. Treatment: ${treatment_type || 'General'}`);
+          }
+        } catch (err) {
+          console.warn('[Bloodwork] Vectorization failed (non-blocking):', err.message);
+        }
+        return null;
+      })(),
+    ]);
 
     // Store bloodwork report
     const normalizedResults = biomarkers.map((b) => ({
       name: String(b.biomarker || '').trim(),
       value: String(b.value || '').trim(),
       unit: String(b.unit || '').trim(),
-      status: 'Unknown', // Status determined by LLM interpretation
+      status: b.isNormal === false ? 'Flagged' : b.isNormal === true ? 'Normal' : 'Unknown',
     }));
 
-    const encResults = isEncryptionEnabled() ? encryptField(JSON.stringify(normalizedResults)) : null;
-    await prisma.bloodWorkReport.create({
-      data: {
-        userId,
-        results: normalizedResults,
-        summary: interpretation.slice(0, 500),
-        encryptedData: encResults ? JSON.stringify({ results: encResults }) : null,
-        encryptionMeta: encResults ? { encrypted: true, version: 1 } : null,
-      },
-    });
+    try {
+      const encResults = isEncryptionEnabled() ? encryptField(JSON.stringify(normalizedResults)) : null;
+      await prisma.bloodWorkReport.create({
+        data: {
+          userId,
+          results: normalizedResults,
+          summary: synthResult.summary?.slice(0, 500) || '',
+          encryptedData: encResults ? JSON.stringify({ results: encResults }) : null,
+          encryptionMeta: encResults ? { encrypted: true, version: 1 } : null,
+        },
+      });
+    } catch (err) {
+      console.warn('[Bloodwork] Report save failed:', err.message);
+    }
 
-    // Vectorize for memory
-    const vectorContent = normalizedResults.map((r) => `${r.name}: ${r.value} ${r.unit}`).join(', ');
-    vectorizeBloodwork(userId, `Bloodwork: ${vectorContent}. Treatment: ${treatment_type || 'General'}`);
-
-    // Log activity
+    // Log activity (fire-and-forget)
     prisma.userActivity.create({
       data: {
         userId,
@@ -311,18 +329,22 @@ router.post('/analyze', verifyJWT, requireConsent, async (req, res) => {
         metadata: {
           markers: normalizedResults.map((r) => r.name),
           treatment_type,
-          kb_context_count: kbContext.length,
-          rerank_used: retrievalResult.rerank_used,
-          expansion_used: retrievalResult.expansion_used,
+          kb_context_count: kbChunks.length,
         },
       },
-    }).catch((e) => console.error('Activity log error:', e));
+    }).catch(() => {});
+
+    // Extract citations
+    const citations = [...new Set(kbChunks.map((c) => c.doc_id).filter(Boolean))];
 
     res.json({
-      interpretation,
+      summary: synthResult.summary,
+      interpretation: synthResult.summary, // Alias for backward compatibility
+      flaggedItems: synthResult.flaggedItems || [],
+      suggestedQuestions: synthResult.suggestedQuestions || [],
+      suggested_questions: synthResult.suggestedQuestions || [], // Alias
       citations,
-      suggested_questions: suggested_questions.slice(0, 3),
-      kb_coverage: kbContext.length > 0,
+      kb_coverage: kbChunks.length > 0,
     });
   } catch (err) {
     console.error('Analyze bloodwork error:', err);
@@ -334,8 +356,7 @@ router.post('/analyze', verifyJWT, requireConsent, async (req, res) => {
 });
 
 /**
- * POST /api/analyze-bloodwork (legacy endpoint - maintains backward compatibility)
- * Accept PDF file, extract + analyze in one step.
+ * POST /api/analyze-bloodwork (legacy endpoint - PDF upload + analyze)
  */
 router.post('/', verifyJWT, requireConsent, upload.single('file'), async (req, res) => {
   let filePath = null;
@@ -349,7 +370,7 @@ router.post('/', verifyJWT, requireConsent, upload.single('file'), async (req, r
     const userId = req.userId;
     const language = req.body?.language || 'en';
 
-    // Parse PDF
+    // Step 1: Parse PDF
     let pdfText;
     try {
       const buffer = await fs.readFile(filePath);
@@ -359,120 +380,189 @@ router.post('/', verifyJWT, requireConsent, upload.single('file'), async (req, r
       pdfText = data.text || '';
     } catch (err) {
       console.error('PDF parse error:', err);
-      return res.status(400).json({ error: 'Could not extract text from PDF. Ensure it is a valid PDF.' });
+      return res.status(400).json({ error: 'Could not extract text from PDF.' });
     } finally {
-      // IMMEDIATELY delete PDF after parsing
       try {
         await fs.unlink(filePath);
         filePath = null;
-      } catch (unlinkErr) {
-        console.error('[Bloodwork] Failed to delete PDF:', unlinkErr.message);
-      }
+      } catch (_) {}
     }
 
     if (!pdfText.trim()) {
       return res.status(400).json({ error: 'No text could be extracted from the PDF.' });
     }
 
-    const truncatedText = pdfText.slice(0, 8000);
-
-    // Build full analysis prompt
-    const langName = LANG_NAMES[language] || 'English';
-    let bloodworkPrompt = `You are a medical lab analyst for reproductive health. Extract ALL lab results from the following text — every marker, not just fertility-related ones.
-
-For each result, return:
-- "name": marker name (keep medical terms in English)
-- "value": the measured value
-- "unit": unit of measurement
-- "status": "In Range" or "Out of Range" based on standard reference ranges
-- "description": a brief 1–2 sentence explanation in ${langName}
-
-Also provide (all text in ${langName}):
-- "summary": a 2-3 sentence overall summary
-- "fertility_note": interpretation for fertility
-- "suggested_questions": array of exactly 3 follow-up questions
-
-Return ONLY valid JSON. No markdown, no code fences.`;
-
-    // Add RAG context
+    // Step 2: AGENT - Extract biomarkers
+    let biomarkers = [];
     try {
-      const ragResults = await querySimilar(truncatedText.slice(0, 500), 3, {}, 'bloodwork');
-      if (ragResults.length > 0) {
-        const context = ragResults.map((r) => r.metadata?.text || r.metadata?.content || '').filter(Boolean).join('\n---\n');
-        if (context) {
-          bloodworkPrompt += `\n\nAdditional reproductive health reference context:\n${context}`;
+      if (isExtractorAvailable()) {
+        const extractionResult = await extractBiomarkers(pdfText);
+        biomarkers = extractionResult.results || [];
+      } else {
+        // Fallback
+        const truncatedText = pdfText.slice(0, 8000);
+        const langName = LANG_NAMES[language] || 'English';
+        const prompt = `You are a medical lab analyst. Extract ALL lab results.
+Return JSON: {"results":[{"name":"...","value":"...","unit":"...","status":"In Range"|"Out of Range","description":"..."}]}
+Also include "summary", "fertility_note", "suggested_questions" array.
+Respond in ${langName}.`;
+
+        const aiResponse = await getLLMResponse(prompt, truncatedText, {
+          temperature: 0.2,
+          maxTokens: 4096,
+          timeout: 50000,
+          responseFormat: 'json',
+        });
+
+        const parsed = extractJSON(aiResponse);
+        if (parsed) {
+          const results = Array.isArray(parsed.results) ? parsed.results : [];
+          const summary = parsed.summary || '';
+          const fertilityNote = parsed.fertility_note || '';
+          const suggestedQuestions = parsed.suggested_questions || [];
+
+          // Normalize and store
+          const normalizedResults = results.map((r) => ({
+            name: String(r.name || r.biomarker || '').trim(),
+            value: String(r.value ?? '').trim(),
+            unit: String(r.unit ?? '').trim(),
+            status: r.status || (r.isNormal === false ? 'Out of Range' : 'In Range'),
+            description: String(r.description || '').trim(),
+          })).filter((r) => r.name);
+
+          // Store report
+          try {
+            const encResults = isEncryptionEnabled() ? encryptField(JSON.stringify(normalizedResults)) : null;
+            await prisma.bloodWorkReport.create({
+              data: {
+                userId,
+                results: normalizedResults,
+                summary: summary || null,
+                encryptedData: encResults ? JSON.stringify({ results: encResults }) : null,
+                encryptionMeta: encResults ? { encrypted: true, version: 1 } : null,
+              },
+            });
+          } catch (err) {
+            console.warn('[Bloodwork] Report save failed:', err.message);
+          }
+
+          // Vectorize (fire-and-forget with length check)
+          const vectorContent = normalizedResults.map((r) => `${r.name}: ${r.value} ${r.unit}`).join(', ');
+          if (vectorContent.length > 0) {
+            try {
+              vectorizeBloodwork(userId, `Bloodwork: ${vectorContent}. Summary: ${summary}`);
+            } catch (_) {}
+          }
+
+          prisma.userActivity.create({
+            data: {
+              userId,
+              type: 'bloodwork_upload',
+              metadata: { markerCount: normalizedResults.length },
+            },
+          }).catch(() => {});
+
+          return res.json({
+            results: normalizedResults.map((r) => ({
+              name: r.name,
+              value: r.value,
+              unit: r.unit,
+              status: r.status,
+              description: r.description,
+            })),
+            summary,
+            fertility_note: fertilityNote,
+            suggested_questions: suggestedQuestions.slice(0, 3),
+          });
         }
       }
+
+      // Convert extraction agent results to legacy format
+      biomarkers = biomarkers.map((b) => ({
+        biomarker: b.biomarker,
+        value: b.value,
+        unit: b.unit || '',
+        isNormal: b.isNormal,
+        referenceRange: b.referenceRange || '',
+      }));
     } catch (err) {
-      console.error('[RAG] Bloodwork context query failed:', err.message);
+      console.warn('[Bloodwork] Extraction failed:', err.message);
     }
 
-    const aiResponse = await getLLMResponse(bloodworkPrompt, truncatedText, {
-      temperature: 0.2,
-      maxTokens: 4096,
-      timeout: 50000,
-      responseFormat: 'json',
-    });
-
-    let results = [];
-    let summary = '';
-    let fertilityNote = '';
-    let suggestedQuestions = [];
-
-    const parsed = extractJSON(aiResponse);
-    if (parsed) {
-      results = Array.isArray(parsed.results) ? parsed.results : [];
-      summary = typeof parsed.summary === 'string' ? parsed.summary : '';
-      fertilityNote = typeof parsed.fertility_note === 'string' ? parsed.fertility_note : '';
-      suggestedQuestions = Array.isArray(parsed.suggested_questions) ? parsed.suggested_questions.slice(0, 3) : [];
+    if (biomarkers.length === 0) {
+      return res.json({
+        results: [],
+        summary: 'No biomarkers could be extracted from the document.',
+        fertility_note: '',
+        suggested_questions: [],
+      });
     }
 
-    const normalizedResults = results.map((r) => ({
-      name: String(r.name || '').trim(),
-      value: String(r.value ?? '').trim(),
-      unit: String(r.unit ?? '').trim(),
-      status: r.status === 'Out of Range' ? 'Out of Range' : 'In Range',
-      description: String(r.description || '').trim(),
-    })).filter((r) => r.name);
+    // Step 3: PARALLEL - Synthesize + Vectorize
+    const vectorContent = biomarkers.map((b) => `${b.biomarker}: ${b.value} ${b.unit || ''}`).join(', ');
 
-    // Store and vectorize
-    const encResults = isEncryptionEnabled() ? encryptField(JSON.stringify(normalizedResults)) : null;
-    const encSummary = summary && isEncryptionEnabled() ? encryptField(summary) : null;
-    await prisma.bloodWorkReport.create({
-      data: {
-        userId,
-        results: normalizedResults,
-        summary: summary || null,
-        encryptedData: encResults ? JSON.stringify({ results: encResults, summary: encSummary }) : null,
-        encryptionMeta: encResults ? { encrypted: true, version: 1 } : null,
-      },
-    });
+    const [synthResult] = await Promise.all([
+      (async () => {
+        try {
+          if (isBloodworkSynthesizerAvailable()) {
+            return await synthesizeBloodworkAnalysis(biomarkers, null, [], language);
+          }
+          return { summary: '', flaggedItems: [], suggestedQuestions: [] };
+        } catch (err) {
+          console.warn('[Bloodwork] Synthesizer failed:', err.message);
+          return { summary: '', flaggedItems: [], suggestedQuestions: [] };
+        }
+      })(),
+      (async () => {
+        if (vectorContent.length > 0) {
+          try {
+            await vectorizeBloodwork(userId, `Bloodwork: ${vectorContent}`);
+          } catch (_) {}
+        }
+      })(),
+    ]);
 
-    const vectorContent = normalizedResults.map((r) => `${r.name}: ${r.value} ${r.unit} (${r.status})`).join(', ');
-    vectorizeBloodwork(userId, `Bloodwork: ${vectorContent}. Summary: ${summary}`);
+    // Store report
+    const normalizedResults = biomarkers.map((b) => ({
+      name: String(b.biomarker || '').trim(),
+      value: String(b.value || '').trim(),
+      unit: String(b.unit || '').trim(),
+      status: b.isNormal === false ? 'Out of Range' : 'In Range',
+      description: '',
+    }));
+
+    try {
+      const encResults = isEncryptionEnabled() ? encryptField(JSON.stringify(normalizedResults)) : null;
+      await prisma.bloodWorkReport.create({
+        data: {
+          userId,
+          results: normalizedResults,
+          summary: synthResult.summary?.slice(0, 500) || null,
+          encryptedData: encResults ? JSON.stringify({ results: encResults }) : null,
+          encryptionMeta: encResults ? { encrypted: true, version: 1 } : null,
+        },
+      });
+    } catch (_) {}
 
     prisma.userActivity.create({
       data: {
         userId,
         type: 'bloodwork_upload',
-        metadata: {
-          markers: normalizedResults.map((r) => ({ name: r.name, status: r.status })),
-          markerCount: normalizedResults.length,
-        },
+        metadata: { markerCount: normalizedResults.length },
       },
-    }).catch((e) => console.error('Activity log error:', e));
+    }).catch(() => {});
 
     res.json({
-      results: normalizedResults.map((r) => ({ name: r.name, value: r.value, unit: r.unit, status: r.status, description: r.description })),
-      summary,
-      fertility_note: fertilityNote,
-      suggested_questions: suggestedQuestions,
+      results: normalizedResults,
+      summary: synthResult.summary || '',
+      fertility_note: '',
+      suggested_questions: synthResult.suggestedQuestions || [],
     });
   } catch (err) {
     console.error('Analyze bloodwork error:', err);
     if (!res.headersSent) {
       const message = err?.message === 'The operation was aborted.'
-        ? 'Analysis timed out. Please try again with a shorter document.'
+        ? 'Analysis timed out. Please try again.'
         : (err?.message || 'Analysis failed');
       res.status(err?.message === 'The operation was aborted.' ? 503 : 500).json({ error: message });
     }
