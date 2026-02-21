@@ -246,7 +246,7 @@ if (!triageResult.isValidFertilityQuery && triageResult.rejectionReason) {
     }
 
     // AGENT 2: Retrieval Swarm (parallel Pinecone + Cohere rerank)
-retrievalResult = await executeRetrievalSwarm(triageResult.searchQueries, queryText);
+    const retrievalResult = await executeRetrievalSwarm(triageResult.searchQueries, queryText);
 
     const kb_final_context = retrievalResult.chunks || [];
     const hasKBContext = kb_final_context.length > 0;
