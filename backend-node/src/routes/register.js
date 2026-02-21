@@ -32,12 +32,27 @@ function hashUsername(username) {
  */
 router.get('/', async (req, res) => {
   try {
-    const existing = await prisma.user.findMany({ select: { username: true } });
-    const taken = new Set(existing.map((u) => (u.username || '').trim().toLowerCase()).filter(Boolean));
-    const usernames = generatePositiveUsernames(5, taken);
+    let existing = [];
+    try {
+      existing = await prisma.user.findMany({ select: { username: true } });
+    } catch (dbErr) {
+      console.error('Register-anonymous DB error:', dbErr.message);
+      // Continue with empty list - usernames will still be generated
+    }
+    const taken = new Set((existing || []).map((u) => (u.username || '').trim().toLowerCase()).filter(Boolean));
+
+    let usernames = [];
+    try {
+      usernames = generatePositiveUsernames(5, taken) || [];
+    } catch (genErr) {
+      console.error('Register-anonymous username generation error:', genErr.message);
+      // Fallback usernames if generator fails
+      usernames = ['HappyUser1', 'BrightStar2', 'JoyfulHeart3', 'WarmSmile4', 'KindSoul5'];
+    }
+
     return res.json({ usernames, avatarUrls: AVATAR_URLS });
   } catch (err) {
-    console.error('Register-anonymous options error:', err);
+    console.error('Register-anonymous options error:', err.message, err.stack);
     return res.status(500).json({ error: 'Failed to generate options' });
   }
 });

@@ -107,7 +107,7 @@ router.post('/', verifyJWT, requireConsent, async (req, res) => {
   try {
     // Parallel BloodworkMemorySwarm with normal retrieval
 const [retrievalResult, userLabResults] = await Promise.all([
-  executeRetrievalSwarm(triageResult.searchQueries, queryText),
+  executeRetrievalSwarm(triageResult?.searchQueries || [], queryText),
   queryBloodworkMemory(userId)
 ]);
 
