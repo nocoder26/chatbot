@@ -118,9 +118,13 @@ app.use('/api/auth', authRoutes);
 app.use('/api/register-anonymous', registerRoutes);
 app.use('/api/consent', consentRoutes);
 app.use('/api/gdpr', userRightsRoutes);
+// Chat routes - mount on both /chat and /api/chat
+app.use('/chat', chatRoutes);
 app.use('/api/chat', chatRoutes);
+// Bloodwork routes - mount on both paths
+app.use('/analyze-bloodwork', bloodworkRoutes);
 app.use('/api/analyze-bloodwork', bloodworkRoutes);
-// Phase 6: New bloodwork endpoints
+app.use('/upload-bloodwork', bloodworkRoutes);
 app.use('/api/upload-bloodwork', bloodworkRoutes);
 app.use('/api/profile', profileRoutes);
 app.use('/api/user-profile', profileRoutes);
