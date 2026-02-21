@@ -13,6 +13,7 @@ import { rerankAndFilter, isRerankAvailable, RERANK_THRESHOLD } from './cohereRe
 
 const KB_TOP_K = parseInt(process.env.RAG_KB_TOP_K || '30', 10);
 const TOP_K_CONTEXT = parseInt(process.env.RAG_TOP_K_CONTEXT || '6', 10);
+const MAX_RERANK_CHUNKS = 15; // Hard cap to prevent Cohere timeout
 const RRF_K = 60;
 const USE_QUERY_EXPANSION = process.env.ENABLE_QUERY_EXPANSION !== 'false';
 const USE_COHERE_RERANK = process.env.ENABLE_COHERE_RERANK !== 'false';
@@ -156,8 +157,8 @@ export async function retrieveKB(queryText) {
   }));
   fused.sort((a, b) => b.fused_score - a.fused_score);
 
-  // Take top candidates for reranking
-  const candidatesForRerank = fused.slice(0, KB_TOP_K);
+  // Take top candidates for reranking (capped at 15 to prevent Cohere timeout)
+  const candidatesForRerank = fused.slice(0, MAX_RERANK_CHUNKS);
 
   // Step 6: Cohere rerank (if enabled)
   let kb_final_context;
