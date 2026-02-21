@@ -66,7 +66,7 @@ RULES:
 - All questions MUST relate strictly to fertility, IVF, reproductive health, or specific treatments mentioned in the context
 - Do NOT ask generic questions (e.g., "What is next?" or "Can you tell me more?")
 - Ask clinical or actionable questions that demonstrate deep understanding
-- Questions should be in ${langName}
+- CRITICAL: You MUST write the 3 follow-up questions entirely in ${langName}. Do not use English unless the requested language is English.
 - Output ONLY a strict JSON object: { "questions": ["Question 1", "Question 2", "Question 3"] }
 - Do not include any other text.`;
 
