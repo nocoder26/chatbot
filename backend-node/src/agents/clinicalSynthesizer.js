@@ -1,12 +1,14 @@
 /**
  * Clinical Synthesizer Agent: Generates fertility health responses.
- * Model: llama-3.3-70b-versatile (high quality, JSON mode)
- * Output: { response, citations, followUpQuestions }
+ * Model: llama-3.3-70b-versatile (high quality)
+ * Streaming mode: Plain markdown text (no JSON mode - 70B struggles with streaming JSON)
+ * Non-streaming mode: JSON structured output
  */
 import Groq from 'groq-sdk';
 
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const MODEL = 'llama-3.3-70b-versatile';
+const FAST_MODEL = 'llama-3.1-8b-instant';
 const TIMEOUT_MS = 25000;
 
 let groq = null;
@@ -24,7 +26,8 @@ export function isSynthesizerAvailable() {
 /**
  * Format citation from raw document ID.
  */
-function formatCitation(rawCitation) {
+export function formatCitation(rawCitation) {
+  if (!rawCitation) return '';
   return rawCitation
     .replace(/_compress\.pdf$/i, '')
     .replace(/\.pdf$/i, '')
@@ -32,15 +35,137 @@ function formatCitation(rawCitation) {
     .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+const LANG_NAMES = {
+  en: 'English', es: 'Spanish', ja: 'Japanese', hi: 'Hindi',
+  ta: 'Tamil', te: 'Telugu', ml: 'Malayalam', fr: 'French', pt: 'Portuguese',
+};
+
 /**
- * Synthesize a clinical response from retrieved context.
+ * Generate follow-up questions using the fast 8B model.
+ * @param {string} responseText - The full response text
+ * @param {string} language - Response language
+ * @returns {Promise<string[]>}
+ */
+export async function generateFollowUpQuestions(responseText, language = 'en') {
+  if (!groq) return [];
+
+  const langName = LANG_NAMES[language] || 'English';
+
+  try {
+    const response = await groq.chat.completions.create({
+      model: FAST_MODEL,
+      messages: [
+        {
+          role: 'system',
+          content: `Based on the health response below, generate exactly 3 contextual follow-up questions the user might want to ask. Return ONLY a JSON array of 3 strings in ${langName}.`,
+        },
+        {
+          role: 'user',
+          content: responseText.slice(0, 2000),
+        },
+      ],
+      temperature: 0.7,
+      max_tokens: 300,
+      response_format: { type: 'json_object' },
+    });
+
+    const content = response.choices?.[0]?.message?.content;
+    if (!content) return [];
+
+    const parsed = JSON.parse(content);
+    const questions = parsed.questions || parsed.followUpQuestions || parsed;
+    return Array.isArray(questions) ? questions.slice(0, 3) : [];
+  } catch (err) {
+    console.warn('[ClinicalSynthesizer] Follow-up generation failed:', err.message);
+    return [];
+  }
+}
+
+/**
+ * Synthesize a clinical response from retrieved context (STREAMING mode).
+ * Returns an async generator that yields text chunks.
+ * @param {string} query - User's question
+ * @param {Array} chunks - Retrieved and reranked chunks
+ * @param {Array} chatHistory - Previous conversation turns
+ * @param {string} language - Response language
+ * @returns {AsyncGenerator<string>}
+ */
+export async function* synthesizeResponseStream(query, chunks, chatHistory = [], language = 'en') {
+  if (!groq) {
+    yield "I'm sorry, I couldn't generate a response at this time. Please try again.";
+    return;
+  }
+
+  const langName = LANG_NAMES[language] || 'English';
+
+  // Build context from chunks (without asking for JSON output)
+  const contextParts = chunks.map((c, i) =>
+    `[Source ${i + 1}: ${formatCitation(c.doc_id)}]\n${c.text}`
+  ).join('\n\n');
+
+  const systemPrompt = `You are Izana, an empathetic fertility health assistant. Generate helpful, accurate responses about reproductive health.
+
+CRITICAL RULES:
+1. Write in flowing clinical prose (avoid bullet points unless specifically requested)
+2. NEVER use the word "cancer" - use "cell abnormalities" or "abnormal cell growth" instead
+3. Naturally reference sources when citing information (e.g., "According to medical research..." or "Studies show...")
+4. Respond entirely in ${langName}
+5. Be warm, supportive, and medically accurate
+6. Keep your response focused and informative
+
+CONTEXT FROM KNOWLEDGE BASE:
+${contextParts || 'No specific context available.'}`;
+
+  // Build messages with chat history
+  const messages = [{ role: 'system', content: systemPrompt }];
+
+  if (chatHistory?.length > 0) {
+    chatHistory.slice(-4).forEach((msg) => {
+      messages.push({
+        role: msg.role === 'ai' ? 'assistant' : 'user',
+        content: msg.content,
+      });
+    });
+  }
+
+  messages.push({ role: 'user', content: query });
+
+  try {
+    const stream = await groq.chat.completions.create({
+      model: MODEL,
+      messages,
+      temperature: 0.7,
+      max_tokens: 1500,
+      stream: true,
+    });
+
+    for await (const chunk of stream) {
+      const delta = chunk.choices?.[0]?.delta?.content;
+      if (delta) {
+        yield delta;
+      }
+    }
+  } catch (err) {
+    console.error('[ClinicalSynthesizer] Stream failed:', err.message);
+    yield "I'm sorry, I encountered an error. Please try again.";
+  }
+}
+
+/**
+ * Synthesize a clinical response from retrieved context (NON-STREAMING mode).
  * @param {string} query - User's question
  * @param {Array} chunks - Retrieved and reranked chunks
  * @param {Array} chatHistory - Previous conversation turns
  * @param {string} language - Response language (e.g., 'en', 'es')
+ * @param {boolean} streaming - If true, returns async generator (use synthesizeResponseStream instead)
  * @returns {Promise<{ response: string, citations: string[], followUpQuestions: string[] }>}
  */
-export async function synthesizeResponse(query, chunks, chatHistory = [], language = 'en') {
+export async function synthesizeResponse(query, chunks, chatHistory = [], language = 'en', streaming = false) {
+  // For streaming, use the dedicated generator function
+  if (streaming) {
+    return synthesizeResponseStream(query, chunks, chatHistory, language);
+  }
+
   const fallback = {
     response: "I'm sorry, I couldn't generate a response at this time. Please try again.",
     citations: [],
@@ -50,6 +175,8 @@ export async function synthesizeResponse(query, chunks, chatHistory = [], langua
   if (!groq) {
     return fallback;
   }
+
+  const langName = LANG_NAMES[language] || 'English';
 
   // Build context from chunks
   const contextParts = chunks.map((c, i) =>
@@ -63,7 +190,7 @@ CRITICAL RULES:
 2. NEVER use the word "cancer" - use "cell abnormalities" or "abnormal cell growth" instead
 3. Cite sources using [Source N] format when referencing information
 4. Generate exactly 2 contextual follow-up questions the user might ask
-5. Respond entirely in ${language === 'en' ? 'English' : language}
+5. Respond entirely in ${langName}
 6. Be warm, supportive, and medically accurate
 
 CONTEXT FROM KNOWLEDGE BASE:

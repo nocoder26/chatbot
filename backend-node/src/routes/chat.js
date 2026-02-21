@@ -4,7 +4,7 @@
  */
 import { Router } from 'express';
 import prisma from '../lib/prisma.js';
-import { streamLLMResponse, getLLMResponse, formatCitation } from '../lib/llm.js';
+import { streamLLMResponse, getLLMResponse } from '../lib/llm.js';
 import { verifyJWT } from '../middleware/auth.js';
 import { vectorizeAndStore, queryConversationMemory } from '../lib/pinecone.js';
 import { hashUserId } from '../gdpr/sanitizer.js';
@@ -19,7 +19,7 @@ import { queryCachedAnswer, upsertCachedAnswer, isCacheAvailable } from '../lib/
 // Micro-Agents
 import { triageQuery, isTriageAvailable } from '../agents/triageAgent.js';
 import { executeRetrievalSwarm } from '../agents/retrievalSwarm.js';
-import { synthesizeResponse, isSynthesizerAvailable } from '../agents/clinicalSynthesizer.js';
+import { synthesizeResponse, synthesizeResponseStream, generateFollowUpQuestions, formatCitation, isSynthesizerAvailable } from '../agents/clinicalSynthesizer.js';
 
 const router = Router();
 
@@ -122,12 +122,13 @@ router.post('/', verifyJWT, requireConsent, async (req, res) => {
             res.setHeader('Cache-Control', 'no-cache');
             res.setHeader('Connection', 'keep-alive');
             res.flushHeaders();
-            res.write(`data: ${JSON.stringify({ content: cleanedText, cached: true })}\n\n`);
-            if (questions.length > 0) {
-              res.write(`data: ${JSON.stringify({ suggested_questions: questions })}\n\n`);
-            }
-            res.write(`data: ${JSON.stringify({ session_id: activeSessionId })}\n\n`);
-            res.write('data: [DONE]\n\n');
+            res.write(`data: ${JSON.stringify({ text: cleanedText, cached: true })}\n\n`);
+            res.write(`data: ${JSON.stringify({
+              isDone: true,
+              citations: [],
+              followUpQuestions: questions,
+              session_id: activeSessionId,
+            })}\n\n`);
             res.end();
           } else {
             res.json({
@@ -204,15 +205,17 @@ router.post('/', verifyJWT, requireConsent, async (req, res) => {
         res.setHeader('Cache-Control', 'no-cache');
         res.setHeader('Connection', 'keep-alive');
         res.flushHeaders();
-        res.write(`data: ${JSON.stringify({ content: triageResult.rejectionReason })}\n\n`);
+        res.write(`data: ${JSON.stringify({ text: triageResult.rejectionReason })}\n\n`);
         res.write(`data: ${JSON.stringify({
-          suggested_questions: [
+          isDone: true,
+          citations: [],
+          followUpQuestions: [
             'What are common fertility tests?',
             'How does IVF work?',
             'What affects ovulation?'
-          ]
+          ],
+          isOffTopic: true,
         })}\n\n`);
-        res.write('data: [DONE]\n\n');
         res.end();
       } else {
         res.json({
@@ -287,21 +290,23 @@ router.post('/', verifyJWT, requireConsent, async (req, res) => {
       res.flushHeaders();
 
       // Try synthesizer agent first, fallback to streaming LLM
-      let fullResponse;
+      let fullResponse = '';
       let synthesizerUsed = false;
 
-if (isSynthesizerAvailable()) {
-  try {
-    const synthStream = await synthesizeResponse(effectiveMessage, kb_final_context, chatHistory, language, true);
-    for await (const chunk of synthStream) {
-      res.write(`data: ${JSON.stringify({ content: chunk })}\n\n`);
-      if (typeof res.flush === 'function') res.flush();
-    }
-    synthesizerUsed = true;
-  } catch (err) {
-    console.warn('[Chat] Synthesizer stream failed, falling back:', err.message);
-  }
-}
+      if (isSynthesizerAvailable()) {
+        try {
+          const synthStream = await synthesizeResponseStream(effectiveMessage, kb_final_context, chatHistory, language);
+          for await (const chunk of synthStream) {
+            fullResponse += chunk;
+            res.write(`data: ${JSON.stringify({ text: chunk })}\n\n`);
+            if (typeof res.flush === 'function') res.flush();
+          }
+          synthesizerUsed = true;
+        } catch (err) {
+          console.warn('[Chat] Synthesizer stream failed, falling back:', err.message);
+          fullResponse = '';
+        }
+      }
 
       if (!synthesizerUsed) {
         // Fallback: streaming LLM
@@ -320,36 +325,55 @@ if (isSynthesizerAvailable()) {
           systemPrompt,
           effectiveMessage,
           (chunk) => {
-            res.write(`data: ${JSON.stringify({ content: chunk })}\n\n`);
+            res.write(`data: ${JSON.stringify({ text: chunk })}\n\n`);
             if (typeof res.flush === 'function') res.flush();
           },
           { temperature: adjustments.temperature, maxTokens: 1024, timeout: 50000 }
         );
       }
 
-      const { cleanedText, questions } = parseFollowUpQuestions(fullResponse);
+      // Parse any follow-up questions from the response (for fallback LLM)
+      const { cleanedText, questions: parsedQuestions } = parseFollowUpQuestions(fullResponse);
 
-      if (questions.length > 0 && !synthesizerUsed) {
-        res.write(`data: ${JSON.stringify({ suggested_questions: questions })}\n\n`);
+      // Compile citations directly from Pinecone metadata
+      const citations = [...new Set(kb_final_context.map((c) => formatCitation(c.doc_id)).filter(Boolean))].slice(0, 5);
+
+      // Generate follow-up questions using fast 8B model
+      let followUpQuestions = parsedQuestions;
+      if (followUpQuestions.length === 0 && fullResponse.length > 50) {
+        try {
+          followUpQuestions = await generateFollowUpQuestions(fullResponse, language);
+        } catch (err) {
+          console.warn('[Chat] Follow-up generation failed:', err.message);
+        }
       }
 
-      res.write(`data: ${JSON.stringify({ kbReferences, kbGap: !hasKBContext })}\n\n`);
-      res.write(`data: ${JSON.stringify({ session_id: activeSessionId })}\n\n`);
-      res.write('data: [DONE]\n\n');
+      // Send final payload with isDone flag, citations, and follow-up questions
+      res.write(`data: ${JSON.stringify({
+        isDone: true,
+        citations,
+        followUpQuestions: followUpQuestions.slice(0, 3),
+        kbReferences,
+        kbGap: !hasKBContext,
+        session_id: activeSessionId,
+      })}\n\n`);
       res.end();
+
+      // Use cleanedText (without [Q1] markers) for storage
+      const responseToStore = cleanedText || fullResponse;
 
       // Update session
       if (activeSessionId) {
         sessionManager.updateHistory(activeSessionId, 'user', queryText).catch(() => {});
-        sessionManager.updateHistory(activeSessionId, 'ai', cleanedText).catch(() => {});
+        sessionManager.updateHistory(activeSessionId, 'ai', responseToStore).catch(() => {});
         sessionManager.cacheContext(activeSessionId, kb_final_context, kb_final_context[0]?.score || 0).catch(() => {});
       }
 
       // Save AI response
-      const aiEnc = isEncryptionEnabled() ? encryptField(cleanedText) : null;
+      const aiEnc = isEncryptionEnabled() ? encryptField(responseToStore) : null;
       await prisma.message.create({
         data: {
-          chatId: chat.id, role: 'ai', content: cleanedText,
+          chatId: chat.id, role: 'ai', content: responseToStore,
           encryptedData: aiEnc ? JSON.stringify(aiEnc) : null,
           encryptionMeta: aiEnc ? { encrypted: true, version: 1 } : null,
         },
@@ -357,7 +381,7 @@ if (isSynthesizerAvailable()) {
 
       // Vectorize conversation
       try {
-        vectorizeAndStore(userId, 'chat_message', `Q: ${queryText}\nA: ${cleanedText.slice(0, 500)}`, { conversationId: chat.id });
+        vectorizeAndStore(userId, 'chat_message', `Q: ${queryText}\nA: ${responseToStore.slice(0, 500)}`, { conversationId: chat.id });
       } catch (err) {
         console.warn('[Chat] Vectorization failed:', err.message);
       }

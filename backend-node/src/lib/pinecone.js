@@ -127,6 +127,7 @@ function isZeroVector(vector) {
 
 export async function vectorizeAndStore(userId, type, content, metadata = {}) {
   if (!userdataIndex) return;
+  if (!content || typeof content !== 'string' || content.trim().length === 0) return;
 
   try {
     const vector = await textToVector(content);
@@ -135,7 +136,7 @@ export async function vectorizeAndStore(userId, type, content, metadata = {}) {
     const pseudoId = hashUserId(userId);
     const id = `${type}_${pseudoId}_${Date.now()}`;
 
-    await userdataIndex.upsert([{
+    const records = [{
       id,
       values: vector,
       metadata: {
@@ -145,7 +146,11 @@ export async function vectorizeAndStore(userId, type, content, metadata = {}) {
         timestamp: new Date().toISOString(),
         ...metadata,
       },
-    }]);
+    }];
+
+    if (!records || records.length === 0) return;
+
+    await userdataIndex.upsert(records);
   } catch (err) {
     console.error('[Pinecone] Vectorize error:', err.message);
   }
@@ -232,16 +237,22 @@ export async function deleteVectorsByUserId(userId) {
  */
 export async function upsertAnonymizedVector(type, content, metadata = {}) {
   if (!userdataIndex) return;
+  if (!content || typeof content !== 'string' || content.trim().length === 0) return;
+
   try {
     const vector = await textToVector(content);
     if (isZeroVector(vector)) return;
 
     const id = `anon_${type}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    await userdataIndex.upsert([{
+    const records = [{
       id,
       values: vector,
       metadata: { type, content: content.slice(0, 1000), timestamp: new Date().toISOString(), anonymized: true, ...metadata },
-    }]);
+    }];
+
+    if (!records || records.length === 0) return;
+
+    await userdataIndex.upsert(records);
   } catch (err) {
     console.error('[Pinecone] Anonymized upsert error:', err.message);
   }
@@ -253,6 +264,7 @@ export async function upsertAnonymizedVector(type, content, metadata = {}) {
 export async function vectorizeBloodwork(userId, content, metadata = {}) {
   const targetIdx = bloodworkIndex || userdataIndex;
   if (!targetIdx) return;
+  if (!content || typeof content !== 'string' || content.trim().length === 0) return;
 
   try {
     const vector = await textToVector(content);
@@ -261,7 +273,7 @@ export async function vectorizeBloodwork(userId, content, metadata = {}) {
     const pseudoId = hashUserId(userId);
     const id = `bw_${pseudoId}_${Date.now()}`;
 
-    await targetIdx.upsert([{
+    const records = [{
       id,
       values: vector,
       metadata: {
@@ -271,7 +283,11 @@ export async function vectorizeBloodwork(userId, content, metadata = {}) {
         timestamp: new Date().toISOString(),
         ...metadata,
       },
-    }]);
+    }];
+
+    if (!records || records.length === 0) return;
+
+    await targetIdx.upsert(records);
   } catch (err) {
     console.error('[Pinecone] Bloodwork vectorize error:', err.message);
   }

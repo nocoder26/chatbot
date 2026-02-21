@@ -391,9 +391,23 @@ export async function fetchChatMessages(
   return response.json();
 }
 
+export interface SSEChunk {
+  text?: string;
+  content?: string; // Legacy support
+  isDone?: boolean;
+  citations?: string[];
+  followUpQuestions?: string[];
+  kbReferences?: KBReference[];
+  kbGap?: boolean;
+  session_id?: string;
+  cached?: boolean;
+  isOffTopic?: boolean;
+  error?: string;
+}
+
 export async function sendChatMessage(
   payload: ChatPayload,
-  onChunk: (chunk: any) => void,
+  onChunk: (chunk: SSEChunk) => void,
   onComplete: () => void,
   onError: (error: Error) => void
 ): Promise<void> {
@@ -433,11 +447,19 @@ export async function sendChatMessage(
       for (const line of lines) {
         const trimmedLine = line.trim();
         if (trimmedLine.startsWith("data: ")) {
+          const dataContent = trimmedLine.slice(6).trim();
+
+          // Gracefully ignore [DONE] string (legacy format)
+          if (dataContent === "[DONE]") {
+            continue;
+          }
+
           try {
-            const data = JSON.parse(trimmedLine.slice(6));
+            const data = JSON.parse(dataContent) as SSEChunk;
             onChunk(data);
           } catch (e) {
-            console.error("Failed to parse SSE data:", e);
+            // Silently ignore parse errors for malformed data
+            console.warn("SSE parse warning (ignoring):", dataContent?.slice(0, 50));
           }
         }
       }

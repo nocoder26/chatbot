@@ -30,6 +30,7 @@ interface ChatMessage {
   type: "user" | "bot";
   content: string;
   suggested_questions?: string[];
+  followUpQuestions?: string[];
   citations?: string[];
   isAnimating: boolean;
   isBloodWorkPrompt?: boolean;
@@ -39,6 +40,7 @@ interface ChatMessage {
   isOffTopic?: boolean;
   kbReferences?: KBReference[];
   kbGap?: boolean;
+  isStreamComplete?: boolean;
 }
 
 // --- TOPIC SHORTCUTS ---
@@ -742,14 +744,42 @@ const handleSend = async (text?: string, isHidden = false) => {
 
   messageCountRef.current += 1;
 
+  // Check for bloodwork query first
+  if (
+    query.toLowerCase().includes("blood work") ||
+    query.toLowerCase().includes("bloodwork")
+  ) {
+    if (!isHidden) {
+      setMessages((p) => [
+        ...p,
+        { id: Date.now(), type: "user", content: query, isAnimating: false },
+      ]);
+    }
+    setMessages((p) => [
+      ...p,
+      {
+        id: Date.now() + 1,
+        type: "bot",
+        content: getTranslation("uploadPrompt", langCode),
+        isBloodWorkPrompt: true,
+        isAnimating: false,
+      },
+    ]);
+    setInput("");
+    return;
+  }
+
   if (!isHidden) {
     setMessages((p) => [
       ...p,
-      { id: Date.now(), type: "user", content: query, isAnimating: false },
+      { id: Date.now(), type: "user", content: query, isAnimating: false, userQuery: query },
     ]);
   }
   setInput("");
   setIsLoading(true);
+
+  // Track the bot message ID for updates
+  const botMessageId = Date.now() + 1;
 
   try {
     await sendChatMessage(
@@ -761,26 +791,55 @@ const handleSend = async (text?: string, isHidden = false) => {
       (chunk) => {
         setMessages((prevMessages) => {
           const lastMessage = prevMessages[prevMessages.length - 1];
-          if (lastMessage?.type === 'bot') {
-            return prevMessages.slice(0, -1).concat({
-              ...lastMessage,
-              content: (lastMessage.content || '') + chunk.content,
-            });
-          } else {
-            return prevMessages.concat({
-              id: Date.now(),
-              type: 'bot',
-              content: chunk.content,
-              isAnimating: true,
+
+          // Handle text chunks (streaming content)
+          if (chunk.text || chunk.content) {
+            const textContent = chunk.text || chunk.content || '';
+            if (lastMessage?.type === 'bot' && lastMessage.isAnimating) {
+              return prevMessages.slice(0, -1).concat({
+                ...lastMessage,
+                content: (lastMessage.content || '') + textContent,
+              });
+            } else {
+              return prevMessages.concat({
+                id: botMessageId,
+                type: 'bot',
+                content: textContent,
+                isAnimating: true,
+                userQuery: query,
+              });
+            }
+          }
+
+          // Handle final payload with isDone
+          if (chunk.isDone) {
+            return prevMessages.map((msg) => {
+              if (msg.type === 'bot' && msg.isAnimating) {
+                return {
+                  ...msg,
+                  isAnimating: false,
+                  isStreamComplete: true,
+                  citations: chunk.citations || [],
+                  followUpQuestions: chunk.followUpQuestions || [],
+                  suggested_questions: chunk.followUpQuestions || [],
+                  kbReferences: chunk.kbReferences || [],
+                  kbGap: chunk.kbGap || false,
+                  isOffTopic: chunk.isOffTopic || false,
+                };
+              }
+              return msg;
             });
           }
+
+          return prevMessages;
         });
       },
       () => {
         setIsLoading(false);
+        // Ensure animation is stopped even if isDone wasn't received
         setMessages((prevMessages) =>
           prevMessages.map((msg) =>
-            msg.isAnimating ? { ...msg, isAnimating: false } : msg
+            msg.isAnimating ? { ...msg, isAnimating: false, isStreamComplete: true } : msg
           )
         );
       },
@@ -811,94 +870,12 @@ const handleSend = async (text?: string, isHidden = false) => {
       },
     ]);
   }
-
-    if (
-      query.toLowerCase().includes("blood work") ||
-      query.toLowerCase().includes("bloodwork")
-    ) {
-      setMessages((p) => [
-        ...p,
-        {
-          id: Date.now() + 1,
-          type: "bot",
-          content: getTranslation("uploadPrompt", langCode),
-          isBloodWorkPrompt: true,
-          isAnimating: false,
-        },
-      ]);
-      return;
-    }
-
-    setIsLoading(true);
-    try {
-      await sendChatMessage(
-        {
-          message: query,
-          language: langCode,
-          ...(chatIdFromUrl && { chatId: chatIdFromUrl }),
-        },
-        (chunk) => {
-          setMessages((prevMessages) => {
-            const lastMessage = prevMessages[prevMessages.length - 1];
-            if (lastMessage?.type === 'bot') {
-              return prevMessages.slice(0, -1).concat({
-                ...lastMessage,
-                content: (lastMessage.content || '') + chunk.content,
-              });
-            } else {
-              return prevMessages.concat({
-                id: Date.now(),
-                type: 'bot',
-                content: chunk.content,
-                isAnimating: true,
-              });
-            }
-          });
-        },
-        () => {
-          setIsLoading(false);
-          setMessages((prevMessages) =>
-            prevMessages.map((msg) =>
-              msg.isAnimating ? { ...msg, isAnimating: false } : msg
-            )
-          );
-        },
-        (error) => {
-          console.error('Chat error:', error);
-          setIsLoading(false);
-          setMessages((p) => [
-            ...p,
-            {
-              id: Date.now() + 1,
-              type: "bot",
-              content: getTranslation("chatError", langCode),
-              isAnimating: false,
-            },
-          ]);
-        }
-      );
-    } catch (err) {
-      console.error("Chat error:", err);
-      setMessages((p) => [
-        ...p,
-        {
-          id: Date.now() + 1,
-          type: "bot",
-          content: getTranslation("chatError", langCode),
-          isAnimating: false,
-        },
-      ]);
-    } finally {
-      setIsLoading(false);
-    }
-  };
+};
 
   const handleBloodWorkConfirm = async (confirmedData: {
     results: LabResult[];
     treatment: string;
   }) => {
-    const savedFertilityNote = bloodWorkData?.fertility_note || "";
-    const savedBloodworkQuestions = bloodWorkData?.suggested_questions || [];
     setShowBloodWorkModal(false);
     setBloodWorkData(null);
 
@@ -910,12 +887,15 @@ const handleSend = async (text?: string, isHidden = false) => {
       ? ` (Treatment: ${confirmedData.treatment})`
       : "";
 
+    const userQuery = `Analyze my lab results: ${labSummary}${treatmentLabel}`;
+    const botMessageId = Date.now() + 1;
+
     setMessages((p) => [
       ...p,
       {
         id: Date.now(),
         type: "user",
-        content: `Analyze my lab results: ${labSummary}${treatmentLabel}`,
+        content: userQuery,
         isAnimating: false,
       },
     ]);
@@ -934,26 +914,53 @@ const handleSend = async (text?: string, isHidden = false) => {
         (chunk) => {
           setMessages((prevMessages) => {
             const lastMessage = prevMessages[prevMessages.length - 1];
-            if (lastMessage?.type === 'bot') {
-              return prevMessages.slice(0, -1).concat({
-                ...lastMessage,
-                content: (lastMessage.content || '') + chunk.content,
-              });
-            } else {
-              return prevMessages.concat({
-                id: Date.now(),
-                type: 'bot',
-                content: chunk.content,
-                isAnimating: true,
+
+            // Handle text chunks
+            if (chunk.text || chunk.content) {
+              const textContent = chunk.text || chunk.content || '';
+              if (lastMessage?.type === 'bot' && lastMessage.isAnimating) {
+                return prevMessages.slice(0, -1).concat({
+                  ...lastMessage,
+                  content: (lastMessage.content || '') + textContent,
+                });
+              } else {
+                return prevMessages.concat({
+                  id: botMessageId,
+                  type: 'bot',
+                  content: textContent,
+                  isAnimating: true,
+                  userQuery,
+                });
+              }
+            }
+
+            // Handle final payload with isDone
+            if (chunk.isDone) {
+              return prevMessages.map((msg) => {
+                if (msg.type === 'bot' && msg.isAnimating) {
+                  return {
+                    ...msg,
+                    isAnimating: false,
+                    isStreamComplete: true,
+                    citations: chunk.citations || [],
+                    followUpQuestions: chunk.followUpQuestions || [],
+                    suggested_questions: chunk.followUpQuestions || [],
+                    kbReferences: chunk.kbReferences || [],
+                    kbGap: chunk.kbGap || false,
+                  };
+                }
+                return msg;
               });
             }
+
+            return prevMessages;
           });
         },
         () => {
           setIsLoading(false);
           setMessages((prevMessages) =>
             prevMessages.map((msg) =>
-              msg.isAnimating ? { ...msg, isAnimating: false } : msg
+              msg.isAnimating ? { ...msg, isAnimating: false, isStreamComplete: true } : msg
             )
           );
         },
@@ -1251,9 +1258,15 @@ const handleSend = async (text?: string, isHidden = false) => {
                 {/* Citations */}
                 {m.type === "bot" &&
                   !m.isAnimating &&
+                  m.isStreamComplete &&
                   m.citations &&
                   m.citations.length > 0 && (
-                    <div className="mt-3 pt-2 border-t border-white/10">
+                    <motion.div
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      transition={{ duration: 0.3, delay: 0.1 }}
+                      className="mt-3 pt-2 border-t border-white/10"
+                    >
                       <p className="text-xs text-white/40 mb-1">{getTranslation("sources", langCode)}</p>
                       <div className="flex flex-wrap gap-1">
                         {m.citations.map((c, i) => (
@@ -1265,12 +1278,17 @@ const handleSend = async (text?: string, isHidden = false) => {
                           </span>
                         ))}
                       </div>
-                    </div>
+                    </motion.div>
                   )}
 
                 {/* PHASE 5: KB References - knowledge sources used */}
-                {m.type === "bot" && !m.isAnimating && m.kbReferences && m.kbReferences.length > 0 && (
-                  <div className="mt-3 pt-2 border-t border-white/10">
+                {m.type === "bot" && !m.isAnimating && m.isStreamComplete && m.kbReferences && m.kbReferences.length > 0 && (
+                  <motion.div
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    transition={{ duration: 0.3 }}
+                    className="mt-3 pt-2 border-t border-white/10"
+                  >
                     <p className="text-xs text-white/50 mb-2">
                       {getTranslation("sourcesUsed", langCode)} ({m.kbReferences.length})
                     </p>
@@ -1282,72 +1300,89 @@ const handleSend = async (text?: string, isHidden = false) => {
                         </div>
                       ))}
                     </div>
-                  </div>
+                  </motion.div>
                 )}
 
                 {/* PHASE 5: KB Gap indicator - shows when LLM used pre-trained knowledge */}
-                {m.type === "bot" && !m.isAnimating && m.kbGap && (
-                  <p className="text-xs text-orange-300/70 mt-2">
+                {m.type === "bot" && !m.isAnimating && m.isStreamComplete && m.kbGap && (
+                  <motion.p
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    transition={{ duration: 0.3 }}
+                    className="text-xs text-orange-300/70 mt-2"
+                  >
                     {getTranslation("kbGapNote", langCode)}
-                  </p>
+                  </motion.p>
                 )}
 
-                {/* Follow-Up Questions */}
+                {/* Follow-Up Questions - Gemini-style */}
                 {m.type === "bot" &&
                   !m.isAnimating &&
+                  m.isStreamComplete &&
                   !m.isBloodWorkPrompt &&
-                  m.suggested_questions &&
-                  m.suggested_questions.length > 0 && (
+                  ((m.followUpQuestions && m.followUpQuestions.length > 0) ||
+                   (m.suggested_questions && m.suggested_questions.length > 0)) && (
                     <motion.div
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: 1 }}
-                      transition={{ duration: 0.4 }}
-                      className="pt-3 mt-3 border-t border-white/10 space-y-2"
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ duration: 0.4, delay: 0.2 }}
+                      className="pt-4 mt-4 border-t border-white/10"
                     >
-                      <p className="text-[11px] text-white/40 font-semibold uppercase tracking-wider mb-1">
+                      <h3 className="text-xs font-semibold text-white/60 uppercase tracking-wider mb-3">
                         {getTranslation("continueExploring", langCode)}
-                      </p>
-                      {m.suggested_questions.map((q, i) => (
-                        <button
-                          key={i}
-                          onClick={() => handleSend(q)}
-                          className="w-full text-left text-sm bg-white/10 p-3 rounded-xl flex items-center justify-between hover:bg-white/20 transition-colors"
-                        >
-                          {q}{" "}
-                          <ChevronRight className="w-4 h-4 text-izana-coral shrink-0" />
-                        </button>
-                      ))}
+                      </h3>
+                      <div className="flex flex-wrap gap-2">
+                        {(m.followUpQuestions || m.suggested_questions || []).map((q, i) => (
+                          <button
+                            key={i}
+                            onClick={() => handleSend(q)}
+                            className="text-sm bg-white/10 hover:bg-white/20 px-4 py-2.5 rounded-full flex items-center gap-2 transition-all hover:scale-[1.02] active:scale-[0.98]"
+                          >
+                            <span className="text-white/90">{q}</span>
+                            <ChevronRight className="w-4 h-4 text-izana-coral shrink-0" />
+                          </button>
+                        ))}
+                      </div>
                     </motion.div>
                   )}
 
                 {/* Feedback: micro thumbs every 3rd bot msg, stars otherwise */}
                 {m.type === "bot" &&
                   !m.isAnimating &&
+                  m.isStreamComplete &&
                   !m.isBloodWorkPrompt &&
-                  m.userQuery && (() => {
-                    const botIndex = messages.filter((x) => x.type === "bot" && x.userQuery).indexOf(m);
-                    const isMicroSlot = (botIndex + 1) % 3 === 0 && botIndex >= 0;
-                    if (isMicroSlot && !m.rating) {
-                      return (
-                        <MicroFeedback
-                          onThumbsUp={() => handleRate(m.id, 5)}
-                          onThumbsDown={() => handleRate(m.id, 1)}
-                          lang={langCode}
-                        />
-                      );
-                    }
-                    return (
-                      <InlineStarRating
-                        currentRating={m.rating || 0}
-                        feedbackReason={m.feedbackReason}
-                        onRate={(r) => handleRate(m.id, r)}
-                        onReasonSelect={(reason) =>
-                          handleFeedbackReason(m.id, reason)
+                  m.userQuery && (
+                    <motion.div
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      transition={{ duration: 0.3, delay: 0.4 }}
+                    >
+                      {(() => {
+                        const botIndex = messages.filter((x) => x.type === "bot" && x.userQuery).indexOf(m);
+                        const isMicroSlot = (botIndex + 1) % 3 === 0 && botIndex >= 0;
+                        if (isMicroSlot && !m.rating) {
+                          return (
+                            <MicroFeedback
+                              onThumbsUp={() => handleRate(m.id, 5)}
+                              onThumbsDown={() => handleRate(m.id, 1)}
+                              lang={langCode}
+                            />
+                          );
                         }
-                        lang={langCode}
-                      />
-                    );
-                  })()}
+                        return (
+                          <InlineStarRating
+                            currentRating={m.rating || 0}
+                            feedbackReason={m.feedbackReason}
+                            onRate={(r) => handleRate(m.id, r)}
+                            onReasonSelect={(reason) =>
+                              handleFeedbackReason(m.id, reason)
+                            }
+                            lang={langCode}
+                          />
+                        );
+                      })()}
+                    </motion.div>
+                  )}
 
                 {/* Blood Work Upload Button */}
                 {m.isBloodWorkPrompt && (
