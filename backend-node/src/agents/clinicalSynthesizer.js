@@ -41,31 +41,49 @@ const LANG_NAMES = {
 };
 
 /**
- * Generate follow-up questions using the fast 8B model.
- * @param {string} responseText - The full response text
+ * Follow-Up Agent: Generates deeply contextual clinical follow-up questions.
+ * Uses llama-3.1-8b-instant for speed.
+ * @param {string} userQuery - The original user question
+ * @param {Array} retrievedContext - The retrieved KB context chunks
  * @param {string} language - Response language
  * @returns {Promise<string[]>}
  */
-export async function generateFollowUpQuestions(responseText, language = 'en') {
+export async function generateFollowUpQuestions(userQuery, retrievedContext = [], language = 'en') {
   if (!groq) return [];
 
   const langName = LANG_NAMES[language] || 'English';
+
+  // Build context summary from retrieved chunks
+  const contextSummary = retrievedContext
+    .slice(0, 3)
+    .map((c) => c.text?.slice(0, 300) || '')
+    .filter(Boolean)
+    .join('\n---\n');
+
+  const systemPrompt = `You are an expert reproductive endocrinology assistant. Based on the provided user query and the retrieved medical context, generate exactly 3 highly specific, deeply contextual follow-up questions the patient should ask next.
+
+RULES:
+- All questions MUST relate strictly to fertility, IVF, reproductive health, or specific treatments mentioned in the context
+- Do NOT ask generic questions (e.g., "What is next?" or "Can you tell me more?")
+- Ask clinical or actionable questions that demonstrate deep understanding
+- Questions should be in ${langName}
+- Output ONLY a strict JSON object: { "questions": ["Question 1", "Question 2", "Question 3"] }
+- Do not include any other text.`;
+
+  const userContent = `USER QUERY: ${userQuery}
+
+RETRIEVED MEDICAL CONTEXT:
+${contextSummary || 'No specific context available.'}`;
 
   try {
     const response = await groq.chat.completions.create({
       model: FAST_MODEL,
       messages: [
-        {
-          role: 'system',
-          content: `Based on the health response below, generate exactly 3 contextual follow-up questions the user might want to ask. Return ONLY a JSON array of 3 strings in ${langName}.`,
-        },
-        {
-          role: 'user',
-          content: responseText.slice(0, 2000),
-        },
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userContent },
       ],
       temperature: 0.7,
-      max_tokens: 300,
+      max_tokens: 400,
       response_format: { type: 'json_object' },
     });
 
@@ -73,10 +91,10 @@ export async function generateFollowUpQuestions(responseText, language = 'en') {
     if (!content) return [];
 
     const parsed = JSON.parse(content);
-    const questions = parsed.questions || parsed.followUpQuestions || parsed;
+    const questions = parsed.questions || parsed.followUpQuestions || [];
     return Array.isArray(questions) ? questions.slice(0, 3) : [];
   } catch (err) {
-    console.warn('[ClinicalSynthesizer] Follow-up generation failed:', err.message);
+    console.warn('[FollowUpAgent] Generation failed:', err.message);
     return [];
   }
 }

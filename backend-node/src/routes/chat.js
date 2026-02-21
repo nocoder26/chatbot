@@ -289,6 +289,9 @@ router.post('/', verifyJWT, requireConsent, async (req, res) => {
       res.setHeader('Connection', 'keep-alive');
       res.flushHeaders();
 
+      // START Follow-Up Agent in PARALLEL with streaming (fire it off immediately)
+      const followUpPromise = generateFollowUpQuestions(queryText, kb_final_context, language);
+
       // Try synthesizer agent first, fallback to streaming LLM
       let fullResponse = '';
       let synthesizerUsed = false;
@@ -335,26 +338,27 @@ router.post('/', verifyJWT, requireConsent, async (req, res) => {
       // Parse any follow-up questions from the response (for fallback LLM)
       const { cleanedText, questions: parsedQuestions } = parseFollowUpQuestions(fullResponse);
 
-      // Compile citations directly from Pinecone metadata
-      const citations = [...new Set(kb_final_context.map((c) => formatCitation(c.doc_id)).filter(Boolean))].slice(0, 5);
+      // Clean citations: ONLY titles from Pinecone metadata (no scores, no percentages)
+      const cleanCitations = [...new Set(kb_final_context.map((c) => formatCitation(c.doc_id)).filter(Boolean))].slice(0, 5);
 
-      // Generate follow-up questions using fast 8B model
-      let followUpQuestions = parsedQuestions;
-      if (followUpQuestions.length === 0 && fullResponse.length > 50) {
-        try {
-          followUpQuestions = await generateFollowUpQuestions(fullResponse, language);
-        } catch (err) {
-          console.warn('[Chat] Follow-up generation failed:', err.message);
-        }
+      // AWAIT the Follow-Up Agent result (it was started in parallel)
+      let followUpQuestions = [];
+      try {
+        followUpQuestions = await followUpPromise;
+      } catch (err) {
+        console.warn('[Chat] Follow-up agent failed:', err.message);
       }
 
-      // Send final payload with isDone flag, citations, and follow-up questions
+      // Fallback to parsed questions if agent returned nothing
+      if (followUpQuestions.length === 0 && parsedQuestions.length > 0) {
+        followUpQuestions = parsedQuestions;
+      }
+
+      // Send final payload with isDone flag, clean citations, and follow-up questions
       res.write(`data: ${JSON.stringify({
         isDone: true,
-        citations,
+        citations: cleanCitations,
         followUpQuestions: followUpQuestions.slice(0, 3),
-        kbReferences,
-        kbGap: !hasKBContext,
         session_id: activeSessionId,
       })}\n\n`);
       res.end();

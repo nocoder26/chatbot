@@ -769,17 +769,30 @@ const handleSend = async (text?: string, isHidden = false) => {
     return;
   }
 
+  // Track the bot message ID for updates
+  const botMessageId = Date.now() + 1;
+
   if (!isHidden) {
     setMessages((p) => [
       ...p,
       { id: Date.now(), type: "user", content: query, isAnimating: false, userQuery: query },
     ]);
   }
+
+  // Create the bot message BEFORE streaming starts to prevent multiple bubbles
+  setMessages((p) => [
+    ...p,
+    {
+      id: botMessageId,
+      type: "bot",
+      content: "",
+      isAnimating: true,
+      userQuery: query,
+    },
+  ]);
+
   setInput("");
   setIsLoading(true);
-
-  // Track the bot message ID for updates
-  const botMessageId = Date.now() + 1;
 
   try {
     await sendChatMessage(
@@ -789,86 +802,76 @@ const handleSend = async (text?: string, isHidden = false) => {
         ...(chatIdFromUrl && { chatId: chatIdFromUrl }),
       },
       (chunk) => {
-        setMessages((prevMessages) => {
-          const lastMessage = prevMessages[prevMessages.length - 1];
-
-          // Handle text chunks (streaming content)
-          if (chunk.text || chunk.content) {
-            const textContent = chunk.text || chunk.content || '';
-            if (lastMessage?.type === 'bot' && lastMessage.isAnimating) {
-              return prevMessages.slice(0, -1).concat({
-                ...lastMessage,
-                content: (lastMessage.content || '') + textContent,
-              });
-            } else {
-              return prevMessages.concat({
-                id: botMessageId,
-                type: 'bot',
-                content: textContent,
-                isAnimating: true,
-                userQuery: query,
-              });
+        // Handle text chunks (streaming content)
+        if (chunk.text || chunk.content) {
+          const textContent = chunk.text || chunk.content || '';
+          setMessages((prev) => {
+            const newMsgs = [...prev];
+            const botMsgIndex = newMsgs.findIndex((m) => m.id === botMessageId);
+            if (botMsgIndex !== -1) {
+              newMsgs[botMsgIndex] = {
+                ...newMsgs[botMsgIndex],
+                content: newMsgs[botMsgIndex].content + textContent,
+              };
             }
-          }
+            return newMsgs;
+          });
+        }
 
-          // Handle final payload with isDone
-          if (chunk.isDone) {
-            return prevMessages.map((msg) => {
-              if (msg.type === 'bot' && msg.isAnimating) {
-                return {
-                  ...msg,
-                  isAnimating: false,
-                  isStreamComplete: true,
-                  citations: chunk.citations || [],
-                  followUpQuestions: chunk.followUpQuestions || [],
-                  suggested_questions: chunk.followUpQuestions || [],
-                  kbReferences: chunk.kbReferences || [],
-                  kbGap: chunk.kbGap || false,
-                  isOffTopic: chunk.isOffTopic || false,
-                };
-              }
-              return msg;
-            });
-          }
-
-          return prevMessages;
-        });
+        // Handle final payload with isDone
+        if (chunk.isDone) {
+          setMessages((prev) => {
+            const newMsgs = [...prev];
+            const botMsgIndex = newMsgs.findIndex((m) => m.id === botMessageId);
+            if (botMsgIndex !== -1) {
+              newMsgs[botMsgIndex] = {
+                ...newMsgs[botMsgIndex],
+                isAnimating: false,
+                isStreamComplete: true,
+                citations: chunk.citations || [],
+                followUpQuestions: chunk.followUpQuestions || [],
+                suggested_questions: chunk.followUpQuestions || [],
+                isOffTopic: chunk.isOffTopic || false,
+              };
+            }
+            return newMsgs;
+          });
+        }
       },
       () => {
         setIsLoading(false);
         // Ensure animation is stopped even if isDone wasn't received
-        setMessages((prevMessages) =>
-          prevMessages.map((msg) =>
-            msg.isAnimating ? { ...msg, isAnimating: false, isStreamComplete: true } : msg
+        setMessages((prev) =>
+          prev.map((msg) =>
+            msg.id === botMessageId && msg.isAnimating
+              ? { ...msg, isAnimating: false, isStreamComplete: true }
+              : msg
           )
         );
       },
       (error) => {
         console.error('Chat error:', error);
         setIsLoading(false);
-        setMessages((p) => [
-          ...p,
-          {
-            id: Date.now() + 1,
-            type: "bot",
-            content: getTranslation("chatError", langCode),
-            isAnimating: false,
-          },
-        ]);
+        // Update the existing bot message with error
+        setMessages((prev) =>
+          prev.map((msg) =>
+            msg.id === botMessageId
+              ? { ...msg, content: getTranslation("chatError", langCode), isAnimating: false }
+              : msg
+          )
+        );
       }
     );
   } catch (err) {
     console.error('Chat error:', err);
     setIsLoading(false);
-    setMessages((p) => [
-      ...p,
-      {
-        id: Date.now() + 1,
-        type: "bot",
-        content: getTranslation("chatError", langCode),
-        isAnimating: false,
-      },
-    ]);
+    setMessages((prev) =>
+      prev.map((msg) =>
+        msg.id === botMessageId
+          ? { ...msg, content: getTranslation("chatError", langCode), isAnimating: false }
+          : msg
+      )
+    );
   }
 };
 
@@ -890,6 +893,7 @@ const handleSend = async (text?: string, isHidden = false) => {
     const userQuery = `Analyze my lab results: ${labSummary}${treatmentLabel}`;
     const botMessageId = Date.now() + 1;
 
+    // Add user message
     setMessages((p) => [
       ...p,
       {
@@ -897,6 +901,18 @@ const handleSend = async (text?: string, isHidden = false) => {
         type: "user",
         content: userQuery,
         isAnimating: false,
+      },
+    ]);
+
+    // Create bot message BEFORE streaming starts
+    setMessages((p) => [
+      ...p,
+      {
+        id: botMessageId,
+        type: "bot",
+        content: "",
+        isAnimating: true,
+        userQuery,
       },
     ]);
 
@@ -912,83 +928,72 @@ const handleSend = async (text?: string, isHidden = false) => {
           ...(chatIdFromUrl && { chatId: chatIdFromUrl }),
         },
         (chunk) => {
-          setMessages((prevMessages) => {
-            const lastMessage = prevMessages[prevMessages.length - 1];
-
-            // Handle text chunks
-            if (chunk.text || chunk.content) {
-              const textContent = chunk.text || chunk.content || '';
-              if (lastMessage?.type === 'bot' && lastMessage.isAnimating) {
-                return prevMessages.slice(0, -1).concat({
-                  ...lastMessage,
-                  content: (lastMessage.content || '') + textContent,
-                });
-              } else {
-                return prevMessages.concat({
-                  id: botMessageId,
-                  type: 'bot',
-                  content: textContent,
-                  isAnimating: true,
-                  userQuery,
-                });
+          // Handle text chunks
+          if (chunk.text || chunk.content) {
+            const textContent = chunk.text || chunk.content || '';
+            setMessages((prev) => {
+              const newMsgs = [...prev];
+              const botMsgIndex = newMsgs.findIndex((m) => m.id === botMessageId);
+              if (botMsgIndex !== -1) {
+                newMsgs[botMsgIndex] = {
+                  ...newMsgs[botMsgIndex],
+                  content: newMsgs[botMsgIndex].content + textContent,
+                };
               }
-            }
+              return newMsgs;
+            });
+          }
 
-            // Handle final payload with isDone
-            if (chunk.isDone) {
-              return prevMessages.map((msg) => {
-                if (msg.type === 'bot' && msg.isAnimating) {
-                  return {
-                    ...msg,
-                    isAnimating: false,
-                    isStreamComplete: true,
-                    citations: chunk.citations || [],
-                    followUpQuestions: chunk.followUpQuestions || [],
-                    suggested_questions: chunk.followUpQuestions || [],
-                    kbReferences: chunk.kbReferences || [],
-                    kbGap: chunk.kbGap || false,
-                  };
-                }
-                return msg;
-              });
-            }
-
-            return prevMessages;
-          });
+          // Handle final payload with isDone
+          if (chunk.isDone) {
+            setMessages((prev) => {
+              const newMsgs = [...prev];
+              const botMsgIndex = newMsgs.findIndex((m) => m.id === botMessageId);
+              if (botMsgIndex !== -1) {
+                newMsgs[botMsgIndex] = {
+                  ...newMsgs[botMsgIndex],
+                  isAnimating: false,
+                  isStreamComplete: true,
+                  citations: chunk.citations || [],
+                  followUpQuestions: chunk.followUpQuestions || [],
+                  suggested_questions: chunk.followUpQuestions || [],
+                };
+              }
+              return newMsgs;
+            });
+          }
         },
         () => {
           setIsLoading(false);
-          setMessages((prevMessages) =>
-            prevMessages.map((msg) =>
-              msg.isAnimating ? { ...msg, isAnimating: false, isStreamComplete: true } : msg
+          setMessages((prev) =>
+            prev.map((msg) =>
+              msg.id === botMessageId && msg.isAnimating
+                ? { ...msg, isAnimating: false, isStreamComplete: true }
+                : msg
             )
           );
         },
         (error) => {
           console.error('Chat error:', error);
           setIsLoading(false);
-          setMessages((p) => [
-            ...p,
-            {
-              id: Date.now() + 1,
-              type: "bot",
-              content: getTranslation("chatError", langCode),
-              isAnimating: false,
-            },
-          ]);
+          setMessages((prev) =>
+            prev.map((msg) =>
+              msg.id === botMessageId
+                ? { ...msg, content: getTranslation("chatError", langCode), isAnimating: false }
+                : msg
+            )
+          );
         }
       );
     } catch (err) {
       console.error("Blood work chat error:", err);
-      setMessages((p) => [
-        ...p,
-        {
-          id: Date.now() + 1,
-          type: "bot",
-          content: getTranslation("bloodworkError", langCode),
-          isAnimating: false,
-        },
-      ]);
+      setMessages((prev) =>
+        prev.map((msg) =>
+          msg.id === botMessageId
+            ? { ...msg, content: getTranslation("bloodworkError", langCode), isAnimating: false }
+            : msg
+        )
+      );
     } finally {
       setIsLoading(false);
     }
@@ -1281,39 +1286,7 @@ const handleSend = async (text?: string, isHidden = false) => {
                     </motion.div>
                   )}
 
-                {/* PHASE 5: KB References - knowledge sources used */}
-                {m.type === "bot" && !m.isAnimating && m.isStreamComplete && m.kbReferences && m.kbReferences.length > 0 && (
-                  <motion.div
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    transition={{ duration: 0.3 }}
-                    className="mt-3 pt-2 border-t border-white/10"
-                  >
-                    <p className="text-xs text-white/50 mb-2">
-                      {getTranslation("sourcesUsed", langCode)} ({m.kbReferences.length})
-                    </p>
-                    <div className="space-y-1">
-                      {m.kbReferences.slice(0, 3).map((ref, i) => (
-                        <div key={i} className="text-xs bg-white/5 px-3 py-2 rounded-lg">
-                          <span className="font-medium text-white/70">{ref.doc_id}</span>
-                          <span className="text-white/40 ml-2">({Math.round(ref.score * 100)}% match)</span>
-                        </div>
-                      ))}
-                    </div>
-                  </motion.div>
-                )}
-
-                {/* PHASE 5: KB Gap indicator - shows when LLM used pre-trained knowledge */}
-                {m.type === "bot" && !m.isAnimating && m.isStreamComplete && m.kbGap && (
-                  <motion.p
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    transition={{ duration: 0.3 }}
-                    className="text-xs text-orange-300/70 mt-2"
-                  >
-                    {getTranslation("kbGapNote", langCode)}
-                  </motion.p>
-                )}
+                {/* KB References and KB Gap indicators removed - admin-only data */}
 
                 {/* Follow-Up Questions - Gemini-style */}
                 {m.type === "bot" &&
