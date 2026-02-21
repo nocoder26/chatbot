@@ -831,28 +831,52 @@ const handleSend = async (text?: string, isHidden = false) => {
 
     setIsLoading(true);
     try {
-      const data: ChatResponse = await sendChatMessage({
-        message: query,
-        language: langCode,
-        ...(chatIdFromUrl && { chatId: chatIdFromUrl }),
-      });
-
-      setMessages((p) => [
-        ...p,
+      await sendChatMessage(
         {
-          id: Date.now() + 1,
-          type: "bot",
-          content: data.response,
-          suggested_questions: data.suggested_questions || [],
-          citations: data.citations || [],
-          isAnimating: true,
-          userQuery: query,
-          rating: 0,
-          isOffTopic: data.offTopic === true,
-          kbReferences: data.kbReferences || [],
-          kbGap: data.kbGap || false,
+          message: query,
+          language: langCode,
+          ...(chatIdFromUrl && { chatId: chatIdFromUrl }),
         },
-      ]);
+        (chunk) => {
+          setMessages((prevMessages) => {
+            const lastMessage = prevMessages[prevMessages.length - 1];
+            if (lastMessage?.type === 'bot') {
+              return prevMessages.slice(0, -1).concat({
+                ...lastMessage,
+                content: (lastMessage.content || '') + chunk.content,
+              });
+            } else {
+              return prevMessages.concat({
+                id: Date.now(),
+                type: 'bot',
+                content: chunk.content,
+                isAnimating: true,
+              });
+            }
+          });
+        },
+        () => {
+          setIsLoading(false);
+          setMessages((prevMessages) =>
+            prevMessages.map((msg) =>
+              msg.isAnimating ? { ...msg, isAnimating: false } : msg
+            )
+          );
+        },
+        (error) => {
+          console.error('Chat error:', error);
+          setIsLoading(false);
+          setMessages((p) => [
+            ...p,
+            {
+              id: Date.now() + 1,
+              type: "bot",
+              content: getTranslation("chatError", langCode),
+              isAnimating: false,
+            },
+          ]);
+        }
+      );
     } catch (err) {
       console.error("Chat error:", err);
       setMessages((p) => [
