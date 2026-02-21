@@ -10,8 +10,6 @@ const DEFAULT_TTL = parseInt(process.env.VALKEY_DEFAULT_TTL || '86400', 10); // 
 
 let client = null;
 let connectionAttempts = 0;
-const MAX_RECONNECT_ATTEMPTS = 10;
-const RECONNECT_DELAY_MS = 1000;
 
 /**
  * Initialize Valkey client with retry logic and connection pool.
@@ -24,19 +22,12 @@ export async function initValkey() {
   try {
     client = new Valkey(VALKEY_URL, {
       maxRetriesPerRequest: 3,
-      retryStrategy(times) {
-        if (times > MAX_RECONNECT_ATTEMPTS) {
-          console.error('[Valkey] Max reconnection attempts reached');
-          return null; // Stop retrying
-        }
-        const delay = Math.min(times * RECONNECT_DELAY_MS, 10000);
-        console.log(`[Valkey] Retrying connection in ${delay}ms (attempt ${times})`);
-        return delay;
-      },
+      retryStrategy: (times) => Math.min(times * 1000, 5000),
+      reconnectOnError: () => true,
       lazyConnect: false,
       enableReadyCheck: true,
       connectTimeout: 10000,
-      keepAlive: 30000,
+      keepAlive: 10000,
     });
 
     client.on('connect', () => {
